@@ -28,4 +28,5 @@ jobs:
           tags: ${{ steps.image.outputs.ref }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - name: Show NAS image reference
-        run: echo "NAS image: ${{ steps.image.outputs.ref }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "NAS image: ${{ steps.image.outputs.ref }}" >> "$GITHUB_STEP_SUMMARY"
