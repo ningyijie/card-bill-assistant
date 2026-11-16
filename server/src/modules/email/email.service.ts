@@ -18,6 +18,7 @@ import { MailboxUnavailableError } from './mail-reader-error';
 
 export interface EmailAccountParams {
   email: string;
+  mailbox?: string;
   imapHost: string;
   imapPort: number;
   tls: boolean;
@@ -38,12 +39,22 @@ function createClient(host: string, port: number, tls: boolean, user: string, pa
   return new ImapFlow({ host, port, secure: tls, auth: { user, pass }, logger: false });
 }
 
+async function connectToMailbox(client: ImapFlow, mailbox: string) {
+  try {
+    await client.connect();
+    return await client.getMailboxLock(mailbox, { readOnly: true });
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+}
+
 /** 测试 IMAP 连接（不落库） */
 export async function testConnection(params: EmailAccountParams): Promise<{ ok: true; mailboxCount: number }> {
   const client = createClient(params.imapHost, params.imapPort, params.tls, params.authUser, params.authPassword);
   try {
     await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
+    const lock = await client.getMailboxLock(params.mailbox ?? 'INBOX', { readOnly: true });
     try {
       const mb = client.mailbox;
       return { ok: true, mailboxCount: mb ? mb.exists ?? 0 : 0 };
@@ -52,6 +63,28 @@ export async function testConnection(params: EmailAccountParams): Promise<{ ok: 
     }
   } finally {
     await client.logout().catch(() => client.close());
+  }
+}
+
+export async function testMailboxes(params: EmailAccountParams, mailboxes: string[]) {
+  const client = createClient(params.imapHost, params.imapPort, params.tls, params.authUser, params.authPassword);
+  try {
+    await client.connect();
+    const results = [];
+    for (const mailbox of mailboxes) {
+      let lock;
+      try {
+        lock = await client.getMailboxLock(mailbox, { readOnly: true });
+      } catch {
+        throw new ApiError(400, `无法打开 IMAP 文件夹「${mailbox}」，请核对完整路径及权限`);
+      }
+      results.push({ mailbox, count: client.mailbox ? client.mailbox.exists ?? 0 : 0 });
+      lock.release();
+    }
+    return { ok: true, folders: results, mailboxCount: results.reduce((total, item) => total + item.count, 0) };
+  } finally {
+    if (client.usable) await client.logout().catch(() => client.close());
+    else client.close();
   }
 }
 
@@ -361,8 +394,7 @@ export async function syncAccount(accountId: number): Promise<{
     const client = createClient(account.imapHost, account.imapPort, account.tls, account.authUser, password);
     const summary = { synced: 0, matched: 0, unmatched: 0, image: 0, errors: 0 };
 
-    await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
+    const lock = await connectToMailbox(client, account.mailbox ?? 'INBOX');
     try {
       // 增量：uid > lastUid；首次：近 N 天
       const searched: number[] | false =
@@ -605,8 +637,7 @@ export async function dryRunParse(accountId: number, limit = 20, parserId?: stri
     error?: string;
   }> = [];
 
-  await client.connect();
-  const lock = await client.getMailboxLock('INBOX');
+  const lock = await connectToMailbox(client, account.mailbox ?? 'INBOX');
   try {
     let uids: number[];
     if (sinceDays) {
@@ -731,7 +762,7 @@ export async function openAccountMailReader(accountId: number): Promise<{
   const client = createClient(account.imapHost, account.imapPort, account.tls, account.authUser, password);
   try {
     await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
+    const lock = await client.getMailboxLock(account.mailbox ?? 'INBOX', { readOnly: true });
     let closed = false;
     return {
       fetch: async (uid) => {
@@ -852,8 +883,7 @@ async function runHistorySync(accountId: number): Promise<void> {
 
   const password = decrypt(config.encryptionKey, Buffer.from(account.authPasswordEnc));
   const client = createClient(account.imapHost, account.imapPort, account.tls, account.authUser, password);
-  await client.connect();
-  const lock = await client.getMailboxLock('INBOX');
+  const lock = await connectToMailbox(client, account.mailbox ?? 'INBOX');
   try {
     const allUids = ((await client.search({ all: true }, { uid: true })) || []).sort((a, b) => a - b);
     // 已有 MailLog 记录的邮件跳过（与增量同步去重口径一致）

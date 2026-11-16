@@ -13,6 +13,7 @@ import { fromYmd } from '../src/lib/dates';
 
 // mock prisma：$transaction 直接把 tx 传给回调，不落真库
 const tx = vi.hoisted(() => ({
+  mailLog: { findUnique: vi.fn() },
   card: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -459,6 +460,7 @@ describe('applyCurrentCycleTransactions 未出账落库', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tx.billTransaction.count.mockResolvedValue(0);
+    tx.mailLog.findUnique.mockResolvedValue(null);
     tx.card.findUnique.mockResolvedValue({ id: 19 });
   });
 
@@ -503,6 +505,20 @@ describe('applyCurrentCycleTransactions 未出账落库', () => {
     expect(count).toBe(2);
     expect(tx.billTransaction.deleteMany).not.toHaveBeenCalled();
     expect(tx.billTransaction.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('跨文件夹日度交易', () => {
+  it('同一邮箱中已导入相同 Message-ID 时不重复写入', async () => {
+    vi.clearAllMocks();
+    tx.mailLog.findUnique.mockResolvedValue({
+      messageId: '<same@example.test>', fromAddress: 'bill@bank.test',
+      account: { email: 'synthetic@example.test' },
+    });
+    tx.billTransaction.count.mockResolvedValueOnce(0).mockResolvedValueOnce(2);
+    expect(await applyCurrentCycleTransactions(88, [], null)).toBe(2);
+    expect(tx.billTransaction.createMany).not.toHaveBeenCalled();
+    expect(tx.billTransaction.deleteMany).not.toHaveBeenCalled();
   });
 });
 

@@ -38,6 +38,12 @@ import {
 } from '../components/MobilePrimitives';
 import './email.css';
 
+function emailFolderLabel(account: EmailAccount): string {
+  return account.mailbox && account.mailbox !== 'INBOX'
+    ? `${account.email} · ${account.mailbox}`
+    : account.email;
+}
+
 export default function Email() {
   const { message } = App.useApp();
   const { isMobile } = useResponsive();
@@ -243,8 +249,11 @@ export default function Email() {
     const stage: 'testing' | 'saving' = test ? 'testing' : 'saving';
     try {
       if (test) {
-        const r = await api.post<{ mailboxCount: number }>('/api/email/accounts/test', values);
-        message.success(`连接成功，收件箱共 ${r.mailboxCount} 封邮件`);
+        const { authPassword, ...connection } = values;
+        const r = await api.post<{ mailboxCount: number; folders: Array<{ mailbox: string; count: number }> }>(
+          '/api/email/accounts/test', { ...connection, accountId: editing?.id, authPassword: authPassword || undefined },
+        );
+        message.success(`连接成功，${r.folders.length} 个文件夹共 ${r.mailboxCount} 封邮件`);
         return;
       }
       if (editing) {
@@ -557,7 +566,7 @@ export default function Email() {
             <Card key={account.id} className="mobile-entity-card" size="small">
               <div className="mobile-entity-heading">
                 <div>
-                  <Typography.Text strong>{account.email}</Typography.Text>
+                  <Typography.Text strong>{emailFolderLabel(account)}</Typography.Text>
                   <Typography.Text type="secondary">
                     {account.imapHost}:{account.imapPort}{account.tls ? ' · SSL' : ''}
                   </Typography.Text>
@@ -631,7 +640,7 @@ export default function Email() {
               mobileLoadMoreRequestedRef.current = false;
               setLogFilter((filter) => ({ ...filter, accountId: value }));
             }}
-            options={accounts.map((account) => ({ value: account.id, label: account.email }))}
+            options={accounts.map((account) => ({ value: account.id, label: emailFolderLabel(account) }))}
           />
           <Select
             allowClear
@@ -823,7 +832,7 @@ export default function Email() {
                 pagination={false}
                 locale={{ emptyText: '尚未绑定邮箱，绑定后可自动同步信用卡账单' }}
                 columns={[
-                  { title: '邮箱', dataIndex: 'email', render: (value, r) => <div className="email-account-identity"><span>{value}</span><span className="email-account-host">{r.imapHost}:{r.imapPort}{r.tls ? ' (SSL)' : ''}</span></div> },
+                  { title: '邮箱', dataIndex: 'email', render: (_, r) => <div className="email-account-identity"><span>{emailFolderLabel(r)}</span><span className="email-account-host">{r.imapHost}:{r.imapPort}{r.tls ? ' (SSL)' : ''}</span></div> },
                   { title: 'IMAP', key: 'imap', width: 200, responsive: ['xl'], render: (_, r) => `${r.imapHost}:${r.imapPort}${r.tls ? ' (SSL)' : ''}` },
                   {
                     title: '上次同步',
@@ -934,7 +943,7 @@ export default function Email() {
                       setLogPage(1);
                       setLogFilter((f) => ({ ...f, accountId: v }));
                     }}
-                    options={accounts.map((a) => ({ value: a.id, label: a.email }))}
+                    options={accounts.map((a) => ({ value: a.id, label: emailFolderLabel(a) }))}
                   />
                   <Select
                     allowClear

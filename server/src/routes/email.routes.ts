@@ -7,6 +7,7 @@ import {
   encryptAuthPassword,
   syncAccount,
   testConnection,
+  testMailboxes,
   dryRunParse,
   fetchMailBody,
   resyncAccount,
@@ -21,8 +22,18 @@ import { decrypt } from '../lib/crypto';
 const router = Router();
 router.use(requireAuth);
 
+const mailboxSchema = z.string().trim().min(1, '请输入 IMAP 文件夹路径').max(191)
+  .refine(value => !/[\u0000-\u001f\u007f]/.test(value), '文件夹路径不能包含控制字符')
+  .transform(value => /^inbox$/i.test(value) ? 'INBOX' : value);
+
+const mailboxPathsSchema = z.string().max(4000)
+  .transform(value => value.split(/\r?\n/).map(path => path.trim()).filter(Boolean))
+  .pipe(z.array(mailboxSchema).max(20, '一次最多添加 20 个文件夹'))
+  .transform(paths => Array.from(new Set(paths)));
+
 const accountSchema = z.object({
   email: z.string().trim().email('邮箱地址格式错误'),
+  mailbox: mailboxSchema.default('INBOX'),
   imapHost: z.string().trim().min(1, 'IMAP 服务器不能为空'),
   imapPort: z.number().int().min(1).max(65535).default(993),
   tls: z.boolean().default(true),
@@ -31,6 +42,7 @@ const accountSchema = z.object({
 });
 // 编辑只处理实际提交的字段。可选字段内的默认值仍会生效，不能直接 partial 后重置旧连接参数。
 const accountUpdateSchema = accountSchema.partial().extend({
+  mailbox: mailboxSchema.optional(),
   imapPort: z.number().int().min(1).max(65535).optional(),
   tls: z.boolean().optional(),
 });
@@ -45,6 +57,7 @@ router.get(
       accounts.map((a) => ({
         id: a.id,
         email: a.email,
+        mailbox: a.mailbox,
         imapHost: a.imapHost,
         imapPort: a.imapPort,
         tls: a.tls,
@@ -62,24 +75,20 @@ router.get(
 router.post(
   '/accounts',
   asyncHandler(async (req, res) => {
-    const input = accountSchema.parse(req.body);
-    const exists = await prisma.emailAccount.findFirst({ where: { email: input.email } });
-    if (exists) throw new ApiError(409, '该邮箱账户已存在');
-
-    if (req.query.test === '1') {
-      await testConnection(input);
-    }
-    const account = await prisma.emailAccount.create({
-      data: {
-        email: input.email,
-        imapHost: input.imapHost,
-        imapPort: input.imapPort,
-        tls: input.tls,
-        authUser: input.authUser,
-        authPasswordEnc: encryptAuthPassword(input.authPassword),
-      },
-    });
-    res.status(201).json({ id: account.id });
+    const { mailboxes, authPassword, ...input } = accountSchema.extend({ mailboxes: mailboxPathsSchema.optional() }).parse(req.body);
+    const paths = mailboxes?.length ? mailboxes : [input.mailbox];
+    if (req.query.test === '1' || mailboxes?.length) await testMailboxes({ ...input, authPassword }, paths);
+    const ids = await prisma.$transaction(async tx => {
+      const exists = await tx.emailAccount.findFirst({ where: { email: input.email, mailbox: { in: paths } } });
+      if (exists) throw new ApiError(409, `该邮箱已配置文件夹「${exists.mailbox}」`);
+      const created = [];
+      const authPasswordEnc = encryptAuthPassword(authPassword);
+      for (const mailbox of paths) {
+        created.push((await tx.emailAccount.create({ data: { ...input, mailbox, authPasswordEnc } })).id);
+      }
+      return created;
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json({ id: ids[0], ids });
   }),
 );
 
@@ -92,7 +101,11 @@ router.put('/accounts/configurations', asyncHandler(async (req, res) => {
   if (existing.length !== accounts.length) throw new ApiError(409, '邮箱账户已变化，请刷新后重新设置');
   const prepared = accounts.map(input => {
     const account = existing.find(row => row.id === input.id)!;
+    if (input.mailbox !== undefined && input.mailbox !== account.mailbox) {
+      throw new ApiError(400, '请为其他文件夹新增同步配置');
+    }
     return { id: input.id, params: {
+      mailbox: account.mailbox,
       email: input.email ?? account.email, imapHost: input.imapHost ?? account.imapHost,
       imapPort: input.imapPort ?? account.imapPort, tls: input.tls ?? account.tls,
       authUser: input.authUser ?? account.authUser,
@@ -118,25 +131,53 @@ router.put(
     const id = Number(req.params.id);
     const account = await prisma.emailAccount.findUnique({ where: { id } });
     if (!account) throw new ApiError(404, '邮箱账户不存在');
-    const input = accountUpdateSchema.parse(req.body);
+    const { mailboxes, ...input } = accountUpdateSchema.extend({ mailboxes: mailboxPathsSchema.optional() }).parse(req.body);
 
+    if (input.mailbox !== undefined && input.mailbox !== account.mailbox) {
+      throw new ApiError(400, '请为其他文件夹新增同步配置');
+    }
     if (input.email && input.email !== account.email) {
-      const dup = await prisma.emailAccount.findFirst({ where: { email: input.email } });
+      const dup = await prisma.emailAccount.findFirst({ where: { email: input.email, mailbox: account.mailbox } });
       if (dup) throw new ApiError(409, '该邮箱已被其他账户使用');
     }
-    await prisma.emailAccount.update({
-      where: { id },
-      data: {
-        ...(input.email !== undefined ? { email: input.email } : {}),
-        ...(input.imapHost !== undefined ? { imapHost: input.imapHost } : {}),
-        ...(input.imapPort !== undefined ? { imapPort: input.imapPort } : {}),
-        ...(input.tls !== undefined ? { tls: input.tls } : {}),
-        ...(input.authUser !== undefined ? { authUser: input.authUser } : {}),
-        ...(input.authPassword !== undefined
-          ? { authPasswordEnc: encryptAuthPassword(input.authPassword) }
-          : {}),
-      },
-    });
+    const connection = {
+      email: input.email ?? account.email,
+      imapHost: input.imapHost ?? account.imapHost,
+      imapPort: input.imapPort ?? account.imapPort,
+      tls: input.tls ?? account.tls,
+      authUser: input.authUser ?? account.authUser,
+    };
+    const paths = (mailboxes ?? []).filter(path => path !== account.mailbox);
+    if (paths.length && !input.authPassword && (
+      connection.imapHost !== account.imapHost || connection.imapPort !== account.imapPort ||
+      connection.tls !== account.tls || connection.authUser !== account.authUser
+    )) throw new ApiError(400, '连接信息已变更，请输入授权码');
+    const authPassword = input.authPassword ?? (paths.length
+      ? decrypt(config.encryptionKey, Buffer.from(account.authPasswordEnc))
+      : undefined);
+    if (paths.length && authPassword) await testMailboxes({ ...connection, authPassword }, paths);
+    await prisma.$transaction(async tx => {
+      await tx.emailAccount.update({
+        where: { id },
+        data: {
+          ...connection,
+          ...(input.authPassword !== undefined ? { authPasswordEnc: encryptAuthPassword(input.authPassword) } : {}),
+        },
+      });
+      if (paths.length) {
+        const existing = await tx.emailAccount.findMany({
+          where: { email: connection.email, mailbox: { in: paths } },
+          select: { mailbox: true },
+        });
+        const missing = paths.filter(mailbox => !existing.some(row => row.mailbox === mailbox));
+        if (missing.length) await tx.emailAccount.createMany({
+          data: missing.map(mailbox => ({
+            ...connection, mailbox,
+            authPasswordEnc: authPassword ? encryptAuthPassword(authPassword) : account.authPasswordEnc,
+          })),
+        });
+      }
+    }, { isolationLevel: 'Serializable' });
     res.json({ ok: true });
   }),
 );
@@ -169,8 +210,20 @@ router.put(
 router.post(
   '/accounts/test',
   asyncHandler(async (req, res) => {
-    const input = accountSchema.parse(req.body);
-    const result = await testConnection(input);
+    const { accountId, mailboxes, authPassword, ...input } = accountSchema.extend({
+      accountId: z.number().int().positive().optional(),
+      mailboxes: mailboxPathsSchema.optional(),
+      authPassword: z.string().min(1).optional(),
+    }).parse(req.body);
+    const account = accountId === undefined ? null : await prisma.emailAccount.findUnique({ where: { id: accountId } });
+    if (!authPassword && !account) throw new ApiError(400, '请输入授权码');
+    if (!authPassword && account && (
+      account.imapHost !== input.imapHost || account.imapPort !== input.imapPort ||
+      account.tls !== input.tls || account.authUser !== input.authUser
+    )) throw new ApiError(400, '连接信息已变更，请输入授权码');
+    const password = authPassword ?? decrypt(config.encryptionKey, Buffer.from(account!.authPasswordEnc));
+    const result = await testMailboxes({ ...input, authPassword: password },
+      mailboxes?.length ? mailboxes : [account?.mailbox ?? input.mailbox]);
     res.json(result);
   }),
 );

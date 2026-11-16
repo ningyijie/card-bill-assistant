@@ -42,6 +42,7 @@ model NotificationChannel {
 model EmailAccount {
   id              Int       @id @default(autoincrement())
   email           String
+  mailbox         String    @default("INBOX") @db.VarChar(191)
   imapHost        String
   imapPort        Int       @default(993)
   tls             Boolean   @default(true)

@@ -848,6 +848,24 @@ export async function applyCurrentCycleTransactions(
       });
       if (finalized > 0) return finalized;
 
+      const source = await tx.mailLog.findUnique({
+        where: { id: mailLogId },
+        select: { messageId: true, fromAddress: true, account: { select: { email: true } } },
+      });
+      if (source?.messageId) {
+        const imported = await tx.billTransaction.count({
+          where: {
+            dailyMailLogId: { not: mailLogId },
+            dailyMailLog: {
+              messageId: source.messageId,
+              fromAddress: source.fromAddress,
+              account: { email: source.account.email },
+            },
+          },
+        });
+        if (imported > 0) return imported;
+      }
+
       await tx.billTransaction.deleteMany({ where: { dailyMailLogId: mailLogId, billId: null } });
       let created = 0;
       for (const batch of batches) {
@@ -885,7 +903,7 @@ export async function applyCurrentCycleTransactions(
         created += eligible.length;
       }
       return created;
-    }),
+    }, { isolationLevel: 'Serializable' }),
   );
 }
 

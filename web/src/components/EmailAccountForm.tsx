@@ -7,13 +7,14 @@ import SettingSwitch from './SettingSwitch';
 import { InlineConfirm, MobileFlow } from './MobilePrimitives';
 import '../pages/email.css';
 
-export type EmailConnection = Pick<EmailAccount, 'id' | 'email' | 'imapHost' | 'imapPort' | 'tls' | 'authUser'>;
+export type EmailConnection = Pick<EmailAccount, 'id' | 'email' | 'imapHost' | 'imapPort' | 'tls' | 'authUser' | 'mailbox'>;
 export interface AccountFormValues {
   email: string;
   imapHost: string;
   imapPort: number;
   tls: boolean;
   authUser: string;
+  mailboxes?: string;
   authPassword?: string;
 }
 
@@ -23,7 +24,7 @@ export interface AccountFormDraft {
 }
 
 function accountFormInitialValues(initial?: EmailConnection | null): Partial<AccountFormValues> {
-  if (!initial) return { imapPort: 993, tls: true };
+  if (!initial) return { imapPort: 993, tls: true, mailboxes: 'INBOX' };
   return {
     email: initial.email,
     imapHost: initial.imapHost,
@@ -42,6 +43,7 @@ function definedAccountDraft(values?: Partial<AccountFormValues>): Partial<Accou
 function normalizedAccountFormValues(values: Partial<AccountFormValues>) {
   return {
     email: values.email ?? '',
+    mailboxes: values.mailboxes ?? '',
     imapHost: values.imapHost ?? '',
     imapPort: values.imapPort ?? null,
     tls: values.tls ?? false,
@@ -186,6 +188,14 @@ export default function AccountForm({
         }
       >
         <EmailAccountFields existing={!!initial} />
+        {initial && <Typography.Paragraph>当前文件夹：{initial.mailbox ?? 'INBOX'}</Typography.Paragraph>}
+        <Form.Item
+          name="mailboxes"
+          label={initial ? '新增 IMAP 文件夹路径' : 'IMAP 文件夹路径'}
+          extra={initial ? '每行一个完整路径，可一次添加多个。已有路径会跳过。' : '每行一个完整路径。保留 INBOX 这一行即可同时同步收件箱。'}
+        >
+          <Input.TextArea rows={4} maxLength={4000} placeholder={'INBOX\n广发信用卡对账单\n中信信用卡对账单'} />
+        </Form.Item>
       </Form>
     </>
   );

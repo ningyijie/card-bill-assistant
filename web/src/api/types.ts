@@ -577,6 +577,7 @@ export interface EmailAccount {
   imapHost: string;
   imapPort: number;
   tls: boolean;
+  mailbox?: string;
   authUser: string;
   enabled: boolean;
   lastUid: number;

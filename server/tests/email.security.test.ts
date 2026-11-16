@@ -17,7 +17,7 @@ vi.mock('../src/parsers/registry', () => ({
   tryParse: parsed.tryParse, getParserById: vi.fn(),
 }));
 vi.mock('../src/parsers/pipeline', () => ({ applyParsedBills: parsed.applyParsedBills, applyCurrentCycleTransactions: vi.fn() }));
-import { syncAccount } from '../src/modules/email/email.service';
+import { dryRunParse, openAccountMailReader, syncAccount, testConnection, testMailboxes } from '../src/modules/email/email.service';
 import { MAX_MAIL_SOURCE_BYTES } from '../src/modules/email/mail-source';
 
 beforeEach(() => {
@@ -34,6 +34,45 @@ beforeEach(() => {
   imap.logout.mockResolvedValue(undefined);
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe('IMAP 文件夹', () => {
+  const mailbox = '广发信用卡对账单';
+
+  it('测试连接以只读方式打开指定文件夹', async () => {
+    await testConnection({
+      mailbox, email: 'synthetic@example.test', imapHost: 'mail.test', imapPort: 993,
+      tls: true, authUser: 'synthetic', authPassword: 'test',
+    });
+    expect(imap.getMailboxLock).toHaveBeenCalledWith(mailbox, { readOnly: true });
+  });
+
+  it('正式同步、试解析和原文读取使用同一文件夹', async () => {
+    db.emailAccount.findUnique.mockResolvedValue({
+      id: 1, enabled: true, lastUid: 100, mailbox, imapHost: 'mail.test',
+      imapPort: 993, tls: true, authUser: 'synthetic', authPasswordEnc: Buffer.from('test'),
+    });
+    imap.search.mockResolvedValue([]);
+    await syncAccount(1);
+    await dryRunParse(1);
+    const reader = await openAccountMailReader(1);
+    await reader.close();
+    expect(imap.getMailboxLock.mock.calls).toEqual(
+      Array.from({ length: 3 }, () => [mailbox, { readOnly: true }]),
+    );
+  });
+
+  it('一次登录逐个只读测试所有指定路径', async () => {
+    const paths = ['INBOX', mailbox, '中信信用卡对账单'];
+    const result = await testMailboxes({
+      email: 'synthetic@example.test', imapHost: 'mail.test', imapPort: 993,
+      tls: true, authUser: 'synthetic', authPassword: 'test',
+    }, paths);
+    expect(imap.connect).toHaveBeenCalledOnce();
+    expect(imap.getMailboxLock.mock.calls).toEqual(paths.map(path => [path, { readOnly: true }]));
+    expect(imap.release).toHaveBeenCalledTimes(3);
+    expect(result.folders.map(folder => folder.mailbox)).toEqual(paths);
+  });
+});
 
 describe('超大邮件不能阻断同步', () => {
   it('出账预读跳过超限邮件，正式同步保留错误元数据并继续后续邮件', async () => {
