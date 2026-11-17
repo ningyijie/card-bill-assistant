@@ -2,6 +2,8 @@ name: Publish NAS image
 on:
   push:
     branches: [nas-custom]
+concurrency:
+  group: publish-nas-image
 permissions:
   contents: read
   packages: write
@@ -18,7 +20,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set image reference
         id: image
-        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "ref=${image}:sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "branch_ref=${image}:nas-custom" >> "$GITHUB_OUTPUT"
       - name: Build and push NAS image
         uses: docker/build-push-action@v6
         with:
@@ -27,6 +32,15 @@ jobs:
           push: true
           tags: ${{ steps.image.outputs.ref }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-      - name: Show NAS image reference
+      - name: Publish the NAS update tag
+        env:
+          VERSIONED_IMAGE: ${{ steps.image.outputs.ref }}
+          BRANCH_IMAGE: ${{ steps.image.outputs.branch_ref }}
         run: |
-          echo "NAS image: ${{ steps.image.outputs.ref }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Versioned NAS image: $VERSIONED_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          remote_ref=$(git ls-remote --exit-code origin refs/heads/nas-custom)
+          read -r head_sha _ <<< "$remote_ref"
+          if [[ "$head_sha" == "$GITHUB_SHA" ]]; then
+            docker buildx imagetools create --tag "$BRANCH_IMAGE" "$VERSIONED_IMAGE"
+            echo "NAS update image: $BRANCH_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          fi
