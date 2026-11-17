@@ -4,9 +4,24 @@
   gap: 12px;
   align-items: start;
 }
-.email-account-identity { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.email-account-identity {
+  display: inline-grid;
+  gap: 4px;
+  max-width: calc(100% - 56px);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
 .email-account-host { font-size: 12px; color: var(--text-secondary); }
 @media (min-width: 1200px) { .email-account-host { display: none; } }
+
+.mobile-email-group > summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.mobile-email-group[open] > summary { margin-bottom: 8px; }
 
 .email-history-progress { display: grid; gap: 16px; }
 .email-progress-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; }

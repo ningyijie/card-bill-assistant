@@ -44,6 +44,36 @@ function emailFolderLabel(account: EmailAccount): string {
     : account.email;
 }
 
+function folderName(account: EmailAccount): string {
+  return !account.mailbox || account.mailbox === 'INBOX' ? '收件箱（INBOX）' : account.mailbox;
+}
+
+type AccountFolderRow = { key: number; label: string; account: EmailAccount; children?: never };
+type AccountRow = AccountFolderRow | {
+  key: string;
+  label: string;
+  account?: never;
+  children: AccountFolderRow[];
+};
+
+function groupAccounts(accounts: EmailAccount[]): AccountRow[] {
+  const groups = new Map<string, EmailAccount[]>();
+  for (const account of accounts) {
+    const key = account.email.trim().toLowerCase();
+    const group = groups.get(key);
+    if (group) group.push(account);
+    else groups.set(key, [account]);
+  }
+  return Array.from(groups, ([email, [first, ...others]]) => {
+    if (!others.length) return { key: first.id, label: emailFolderLabel(first), account: first };
+    return {
+      key: email,
+      label: first.email,
+      children: [first, ...others].map(account => ({ key: account.id, label: folderName(account), account })),
+    };
+  });
+}
+
 export default function Email() {
   const { message } = App.useApp();
   const { isMobile } = useResponsive();
@@ -51,6 +81,7 @@ export default function Email() {
   const navigate = useNavigate();
   const historyGate = useHistoryGate();
   const accounts = historyGate.accounts;
+  const accountRows = groupAccounts(accounts);
   const [activeTab, setActiveTab] = useViewState('email:tab', 'accounts');
   const [editing, setEditing] = useState<EmailAccount | null | undefined>(undefined);
   const [accountDraft, setAccountDraft] = useState<AccountFormDraft | null>(null);
@@ -492,7 +523,7 @@ export default function Email() {
     const config =
       kind === 'history'
         ? {
-            title: `拉取 ${account.email} 的全部历史邮件？`,
+            title: `拉取 ${folderName(account)} 的全部历史邮件？`,
             description: '任务可能耗时较长，启动后会持续显示进度，已处理邮件会自动跳过。',
             confirmText: '开始历史拉取',
             action: () => startHistory(account),
@@ -500,17 +531,17 @@ export default function Email() {
           }
         : kind === 'resync'
           ? {
-              title: `重新同步 ${account.email}？`,
-              description: '将清除该邮箱的同步日志，并重新读取所选天数内的邮件。',
+              title: `重新同步 ${folderName(account)}？`,
+              description: '将清除该文件夹的同步日志，并重新读取所选天数内的邮件。',
               confirmText: '重新同步',
               action: () => resync(account.id),
               danger: true,
             }
           : {
-              title: `解绑 ${account.email}？`,
+              title: `解绑 ${folderName(account)}？`,
               description:
-                '解绑会删除该邮箱账户与全部同步日志，不会删除卡片和账单；依赖该账户或日志的历史交易明细将无法再实时读取。此操作不可恢复。',
-              confirmText: '解绑邮箱',
+                '解绑会删除该文件夹的绑定和同步日志。依赖该绑定或日志的历史交易明细将无法再实时读取。此操作不可恢复。',
+              confirmText: '解绑文件夹',
               action: () => remove(account.id),
               danger: true,
             };
@@ -540,7 +571,7 @@ export default function Email() {
         footer={<Button block onClick={closeHistoryProgress}>返回邮箱绑定</Button>}
       >
         <MobilePullToRefresh onRefresh={refreshPage}>
-          {historyAccount && <Typography.Title level={5}>{historyAccount.email}</Typography.Title>}
+          {historyAccount && <Typography.Title level={5}>{emailFolderLabel(historyAccount)}</Typography.Title>}
           {historyProgressContent}
         </MobilePullToRefresh>
       </MobileFlow>
@@ -548,6 +579,69 @@ export default function Email() {
   }
 
   if (isMobile) {
+    const renderFolderCard = ({ account, label }: AccountFolderRow) => (
+      <Card key={account.id} className="mobile-entity-card" size="small">
+        <div className="mobile-entity-heading">
+          <div>
+            <Typography.Text strong>{label}</Typography.Text>
+            <Typography.Text type="secondary">
+              {account.imapHost}:{account.imapPort}{account.tls ? ' · SSL' : ''}
+            </Typography.Text>
+          </div>
+          <SettingSwitch
+            className="mobile-email-switch"
+            checked={account.enabled}
+            aria-label={`${emailFolderLabel(account)} 同步${account.enabled ? '已启用' : '已停用'}`}
+            loading={toggling === account.id}
+            disabled={historyGate.blocked || toggling === account.id}
+            onChange={(enabled) => void toggleEnabled(account, enabled)}
+          />
+        </div>
+        <InfoFields plain className="email-account-facts" items={[{ label: '上次同步', value: account.lastSyncAt ? displayDate(account.lastSyncAt, { time: true }) : '从未' }]} />
+        <div className="mobile-action-grid">
+          <Button
+            disabled={historyGate.blocked || syncing === account.id || resyncing === account.id}
+            onClick={() => setMobileConfirm({ kind: 'history', account })}
+          >
+            拉取历史
+          </Button>
+          <Button
+            type="primary"
+            ghost
+            loading={syncing === account.id}
+            disabled={historyGate.blocked || resyncing === account.id}
+            onClick={() => void sync(account.id)}
+          >
+            同步
+          </Button>
+          <Button
+            disabled={historyGate.blocked || syncing === account.id}
+            loading={resyncing === account.id}
+            onClick={() => setMobileConfirm({ kind: 'resync', account })}
+          >
+            重新同步
+          </Button>
+          <Button
+            disabled={historyGate.blocked}
+            onClick={() => {
+              openEditor(account);
+            }}
+          >
+            编辑
+          </Button>
+          <Button
+            className="mobile-email-account-unbind"
+            danger
+            loading={removing === account.id}
+            disabled={historyGate.blocked || removing === account.id}
+            onClick={() => setMobileConfirm({ kind: 'remove', account })}
+          >
+            解绑
+          </Button>
+        </div>
+      </Card>
+    );
+
     const accountList = (
       <div className="mobile-email-list">
         {historyGate.blocked && (
@@ -562,68 +656,12 @@ export default function Email() {
         {accounts.length === 0 ? (
           <Empty description="尚未绑定邮箱，绑定后可自动同步信用卡账单" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
-          accounts.map((account) => (
-            <Card key={account.id} className="mobile-entity-card" size="small">
-              <div className="mobile-entity-heading">
-                <div>
-                  <Typography.Text strong>{emailFolderLabel(account)}</Typography.Text>
-                  <Typography.Text type="secondary">
-                    {account.imapHost}:{account.imapPort}{account.tls ? ' · SSL' : ''}
-                  </Typography.Text>
-                </div>
-                <SettingSwitch
-                  className="mobile-email-switch"
-                  checked={account.enabled}
-                  aria-label={`${account.email} 邮箱同步${account.enabled ? '已启用' : '已停用'}`}
-                  loading={toggling === account.id}
-                  disabled={historyGate.blocked || toggling === account.id}
-                  onChange={(enabled) => void toggleEnabled(account, enabled)}
-                />
-              </div>
-              <InfoFields plain className="email-account-facts" items={[{ label: '上次同步', value: account.lastSyncAt ? displayDate(account.lastSyncAt, { time: true }) : '从未' }]} />
-              <div className="mobile-action-grid">
-                <Button
-                  disabled={historyGate.blocked || syncing === account.id || resyncing === account.id}
-                  onClick={() => setMobileConfirm({ kind: 'history', account })}
-                >
-                  拉取历史
-                </Button>
-                <Button
-                  type="primary"
-                  ghost
-                  loading={syncing === account.id}
-                  disabled={historyGate.blocked || resyncing === account.id}
-                  onClick={() => void sync(account.id)}
-                >
-                  同步
-                </Button>
-                <Button
-                  disabled={historyGate.blocked || syncing === account.id}
-                  loading={resyncing === account.id}
-                  onClick={() => setMobileConfirm({ kind: 'resync', account })}
-                >
-                  重新同步
-                </Button>
-                <Button
-                  disabled={historyGate.blocked}
-                  onClick={() => {
-                    openEditor(account);
-                  }}
-                >
-                  编辑
-                </Button>
-                <Button
-                  className="mobile-email-account-unbind"
-                  danger
-                  loading={removing === account.id}
-                  disabled={historyGate.blocked || removing === account.id}
-                  onClick={() => setMobileConfirm({ kind: 'remove', account })}
-                >
-                  解绑
-                </Button>
-              </div>
-            </Card>
-          ))
+          accountRows.map(row => row.children ? (
+            <details className="mobile-email-group" key={row.key}>
+              <summary>{row.label} · {row.children.length} 个文件夹</summary>
+              <div className="mobile-email-list">{row.children.map(renderFolderCard)}</div>
+            </details>
+          ) : renderFolderCard(row))
         )}
       </div>
     );
@@ -824,30 +862,39 @@ export default function Email() {
             key: 'accounts',
             label: '邮箱账户',
             children: (
-              <Table<EmailAccount>
+              <Table<AccountRow>
                 className="email-account-table"
                 tableLayout="fixed"
-                rowKey="id"
-                dataSource={accounts}
+                rowKey="key"
+                dataSource={accountRows}
                 pagination={false}
                 locale={{ emptyText: '尚未绑定邮箱，绑定后可自动同步信用卡账单' }}
                 columns={[
-                  { title: '邮箱', dataIndex: 'email', render: (_, r) => <div className="email-account-identity"><span>{emailFolderLabel(r)}</span><span className="email-account-host">{r.imapHost}:{r.imapPort}{r.tls ? ' (SSL)' : ''}</span></div> },
-                  { title: 'IMAP', key: 'imap', width: 200, responsive: ['xl'], render: (_, r) => `${r.imapHost}:${r.imapPort}${r.tls ? ' (SSL)' : ''}` },
+                  {
+                    title: '邮箱',
+                    key: 'email',
+                    render: (_, row) => (
+                      <span className="email-account-identity">
+                        <span>{row.label}{row.children && <Typography.Text type="secondary"> · {row.children.length} 个文件夹</Typography.Text>}</span>
+                        {row.account && <span className="email-account-host">{row.account.imapHost}:{row.account.imapPort}{row.account.tls ? ' (SSL)' : ''}</span>}
+                      </span>
+                    ),
+                  },
+                  { title: 'IMAP', key: 'imap', width: 200, responsive: ['xl'], render: (_, { account }) => account && `${account.imapHost}:${account.imapPort}${account.tls ? ' (SSL)' : ''}` },
                   {
                     title: '上次同步',
-                    dataIndex: 'lastSyncAt',
+                    key: 'lastSyncAt',
                     width: 140,
-                    render: (v) => (v ? displayDate(v, { time: true }) : '从未'),
+                    render: (_, { account }) => account && (account.lastSyncAt ? displayDate(account.lastSyncAt, { time: true }) : '从未'),
                   },
                   {
                     title: '启用',
-                    dataIndex: 'enabled',
+                    key: 'enabled',
                     width: 80,
-                    render: (v, r) => (
+                    render: (_, { account: r }) => r && (
                       <SettingSwitch
-                        checked={v}
-                        aria-label={`${r.email} 邮箱同步${v ? '已启用' : '已停用'}`}
+                        checked={r.enabled}
+                        aria-label={`${emailFolderLabel(r)} 同步${r.enabled ? '已启用' : '已停用'}`}
                         loading={toggling === r.id}
                         disabled={historyGate.blocked || toggling === r.id}
                         onChange={(e) => void toggleEnabled(r, e)}
@@ -858,7 +905,7 @@ export default function Email() {
                     title: '操作',
                     key: 'op',
                     width: 310,
-                    render: (_, r) => (
+                    render: (_, { account: r }) => r && (
                       <Space wrap>
                         <Button
                           size="small"
@@ -872,8 +919,8 @@ export default function Email() {
                           同步
                         </Button>
                         <Popconfirm
-                          title="拉取全部历史邮件？"
-                          description="不限时间拉取邮箱内全部历史账单邮件（已处理的自动跳过），用于初始化后补全历史账单。"
+                          title={`拉取 ${folderName(r)} 的全部历史邮件？`}
+                          description="不限时间拉取该文件夹内的历史账单邮件（已处理的自动跳过），用于初始化后补全历史账单。"
                           onConfirm={() => void startHistory(r)}
                         >
                           <Button
@@ -885,8 +932,8 @@ export default function Email() {
                           </Button>
                         </Popconfirm>
                         <Popconfirm
-                          title="重新同步该邮箱？"
-                          description="将清除该邮箱的同步日志，并重新读取所选天数内的邮件。"
+                          title={`重新同步 ${folderName(r)}？`}
+                          description="将清除该文件夹的同步日志，并重新读取所选天数内的邮件。"
                           onConfirm={() => void resync(r.id)}
                         >
                           <Button
@@ -908,8 +955,8 @@ export default function Email() {
                           编辑
                         </Button>
                         <Popconfirm
-                          title={`解绑 ${r.email}？`}
-                          description="解绑会删除该邮箱账户与全部同步日志，不会删除卡片和账单；依赖该账户或日志的历史交易明细将无法再实时读取。"
+                          title={`解绑 ${folderName(r)}？`}
+                          description="解绑会删除该文件夹的绑定和同步日志。依赖该绑定或日志的历史交易明细将无法再实时读取。"
                           onConfirm={() => void remove(r.id)}
                         >
                           <Button
@@ -1025,7 +1072,7 @@ export default function Email() {
 
       {historyView && historyAccount && (
         <Modal
-          title={`历史拉取 - ${historyAccount.email}`}
+          title={`历史拉取 - ${emailFolderLabel(historyAccount)}`}
           open={historyState != null || historyGate.phase === 'starting'}
           onCancel={closeHistoryProgress}
           footer={<Button onClick={closeHistoryProgress}>返回邮箱绑定</Button>}
