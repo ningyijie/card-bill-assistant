@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Typography } from 'antd';
 import type { EmailAccount } from '../api/types';
+import { api, ApiError } from '../api/client';
 import { useDraftGuard } from '../lib/draftGuard';
 import { useResponsive, useResetOnModeChange } from '../responsive';
 import SettingSwitch from './SettingSwitch';
@@ -14,7 +15,7 @@ export interface AccountFormValues {
   imapPort: number;
   tls: boolean;
   authUser: string;
-  mailboxes?: string;
+  mailboxes?: string[];
   authPassword?: string;
 }
 
@@ -24,7 +25,7 @@ export interface AccountFormDraft {
 }
 
 function accountFormInitialValues(initial?: EmailConnection | null): Partial<AccountFormValues> {
-  if (!initial) return { imapPort: 993, tls: true, mailboxes: 'INBOX' };
+  if (!initial) return { imapPort: 993, tls: true, mailboxes: ['INBOX'] };
   return {
     email: initial.email,
     imapHost: initial.imapHost,
@@ -43,7 +44,7 @@ function definedAccountDraft(values?: Partial<AccountFormValues>): Partial<Accou
 function normalizedAccountFormValues(values: Partial<AccountFormValues>) {
   return {
     email: values.email ?? '',
-    mailboxes: values.mailboxes ?? '',
+    mailboxes: values.mailboxes ?? [],
     imapHost: values.imapHost ?? '',
     imapPort: values.imapPort ?? null,
     tls: values.tls ?? false,
@@ -124,6 +125,9 @@ export default function AccountForm({
 }) {
   const [form] = Form.useForm<AccountFormValues>();
   const [testing, setTesting] = useState(false);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [folderError, setFolderError] = useState('');
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const { isMobile } = useResponsive();
   const baseline = useRef(accountFormInitialValues(initial)).current;
@@ -160,6 +164,26 @@ export default function AccountForm({
     }
   };
 
+  const loadFolders = async () => {
+    if (loadingFolders || busyRef.current) return;
+    setLoadingFolders(true);
+    setFolderError('');
+    try {
+      const { mailboxes: _selected, authPassword, ...connection } = await form.validateFields();
+      const list = await api.post<Array<{ path: string }>>('/api/email/accounts/folders', {
+        ...connection, accountId: initial?.id, authPassword: authPassword || undefined,
+      });
+      setFolders(list.map(folder => folder.path));
+      if (!list.length) setFolderError('邮箱没有向 IMAP 客户端公开可选文件夹');
+    } catch (error) {
+      if (error && typeof error === 'object' && 'errorFields' in error) return;
+      setFolders([]);
+      setFolderError(error instanceof ApiError ? error.message : '读取文件夹失败，请重试');
+    } finally {
+      setLoadingFolders(false);
+    }
+  };
+
   useDraftGuard(Boolean(draft?.dirty));
 
   const requestCancel = () => {
@@ -191,11 +215,24 @@ export default function AccountForm({
         {initial && <Typography.Paragraph>当前文件夹：{initial.mailbox ?? 'INBOX'}</Typography.Paragraph>}
         <Form.Item
           name="mailboxes"
-          label={initial ? '新增 IMAP 文件夹路径' : 'IMAP 文件夹路径'}
-          extra={initial ? '每行一个完整路径，可一次添加多个。已有路径会跳过。' : '每行一个完整路径。保留 INBOX 这一行即可同时同步收件箱。'}
+          label={initial ? '新增 IMAP 文件夹' : 'IMAP 文件夹'}
+          extra={
+            <>
+              <Button type="link" loading={loadingFolders} disabled={disabled || testing || confirmLoading}
+                onClick={() => void loadFolders()}>读取邮箱文件夹</Button>
+              {initial ? '可多选，已有路径会跳过。' : '可多选。保留 INBOX 可同时同步收件箱。'}
+            </>
+          }
         >
-          <Input.TextArea rows={4} maxLength={4000} placeholder={'INBOX\n广发信用卡对账单\n中信信用卡对账单'} />
+          <Select mode="tags" maxCount={20} loading={loadingFolders}
+            disabled={disabled || testing || confirmLoading}
+            placeholder="读取邮箱文件夹后多选"
+            options={folders.filter(path => path !== (initial?.mailbox ?? '')).map(path => ({
+              value: path, label: path === 'INBOX' ? '收件箱（INBOX）' : path,
+            }))}
+          />
         </Form.Item>
+        {folderError && <Alert type="warning" showIcon title={folderError} />}
       </Form>
     </>
   );

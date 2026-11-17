@@ -88,6 +88,23 @@ export async function testMailboxes(params: EmailAccountParams, mailboxes: strin
   }
 }
 
+/** 列出 IMAP 服务器公开的完整路径，不打开文件夹或读取邮件。 */
+export async function listMailboxes(params: EmailAccountParams) {
+  const client = createClient(params.imapHost, params.imapPort, params.tls, params.authUser, params.authPassword);
+  try {
+    await client.connect();
+    const folders = await client.list();
+    return folders
+      .filter(folder => folder.listed && !folder.flags.has('\\Noselect') && !folder.flags.has('\\NonExistent'))
+      .map(folder => ({ path: folder.path }));
+  } catch {
+    throw new ApiError(400, '无法读取 IMAP 文件夹，请检查连接信息、授权码及邮箱的 IMAP 文件夹设置');
+  } finally {
+    if (client.usable) await client.logout().catch(() => client.close());
+    else client.close();
+  }
+}
+
 interface EnvelopeInfo {
   uid: number;
   messageId: string | null;

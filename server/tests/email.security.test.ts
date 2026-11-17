@@ -5,7 +5,7 @@ const db = vi.hoisted(() => ({
   bill: { findFirst: vi.fn() },
   mailLog: { findUnique: vi.fn(), create: vi.fn() },
 }));
-const imap = vi.hoisted(() => ({ connect: vi.fn(), getMailboxLock: vi.fn(), search: vi.fn(), fetchAll: vi.fn(), fetchOne: vi.fn(), logout: vi.fn(), close: vi.fn(), release: vi.fn() }));
+const imap = vi.hoisted(() => ({ connect: vi.fn(), list: vi.fn(), getMailboxLock: vi.fn(), search: vi.fn(), fetchAll: vi.fn(), fetchOne: vi.fn(), logout: vi.fn(), close: vi.fn(), release: vi.fn() }));
 const parsed = vi.hoisted(() => ({ tryParse: vi.fn(), applyParsedBills: vi.fn() }));
 vi.mock('../src/lib/prisma', () => ({ prisma: db }));
 vi.mock('../src/config', () => ({ config: { encryptionKey: Buffer.alloc(32, 3) } }));
@@ -17,7 +17,7 @@ vi.mock('../src/parsers/registry', () => ({
   tryParse: parsed.tryParse, getParserById: vi.fn(),
 }));
 vi.mock('../src/parsers/pipeline', () => ({ applyParsedBills: parsed.applyParsedBills, applyCurrentCycleTransactions: vi.fn() }));
-import { dryRunParse, openAccountMailReader, syncAccount, testConnection, testMailboxes } from '../src/modules/email/email.service';
+import { dryRunParse, listMailboxes, openAccountMailReader, syncAccount, testConnection, testMailboxes } from '../src/modules/email/email.service';
 import { MAX_MAIL_SOURCE_BYTES } from '../src/modules/email/mail-source';
 
 beforeEach(() => {
@@ -37,6 +37,22 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('IMAP 文件夹', () => {
   const mailbox = '广发信用卡对账单';
+
+  it('列出完整中文路径，跳过不可打开的父目录和失效订阅', async () => {
+    const child = `银行账单/${mailbox}`;
+    imap.list.mockResolvedValue([
+      { path: 'INBOX', listed: true, flags: new Set() },
+      { path: '银行账单', listed: true, flags: new Set(['\\Noselect']) },
+      { path: child, listed: true, flags: new Set() },
+      { path: '已移除', listed: false, flags: new Set() },
+    ]);
+    await expect(listMailboxes({
+      email: 'synthetic@example.test', imapHost: 'mail.test', imapPort: 993,
+      tls: true, authUser: 'synthetic', authPassword: 'test',
+    })).resolves.toEqual([{ path: 'INBOX' }, { path: child }]);
+    expect(imap.getMailboxLock).not.toHaveBeenCalled();
+    expect(imap.fetchOne).not.toHaveBeenCalled();
+  });
 
   it('测试连接以只读方式打开指定文件夹', async () => {
     await testConnection({

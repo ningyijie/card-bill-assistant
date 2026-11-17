@@ -8,6 +8,7 @@ import {
   syncAccount,
   testConnection,
   testMailboxes,
+  listMailboxes,
   dryRunParse,
   fetchMailBody,
   resyncAccount,
@@ -22,12 +23,12 @@ import { decrypt } from '../lib/crypto';
 const router = Router();
 router.use(requireAuth);
 
-const mailboxSchema = z.string().trim().min(1, '请输入 IMAP 文件夹路径').max(191)
+const mailboxSchema = z.string().max(191).refine(value => value.trim().length > 0, '请输入 IMAP 文件夹路径')
   .refine(value => !/[\u0000-\u001f\u007f]/.test(value), '文件夹路径不能包含控制字符')
   .transform(value => /^inbox$/i.test(value) ? 'INBOX' : value);
 
-const mailboxPathsSchema = z.string().max(4000)
-  .transform(value => value.split(/\r?\n/).map(path => path.trim()).filter(Boolean))
+const mailboxPathsSchema = z.union([z.string().max(4000), z.array(z.string()).max(20)])
+  .transform(value => typeof value === 'string' ? value.split(/\r?\n/).map(path => path.trim()).filter(Boolean) : value)
   .pipe(z.array(mailboxSchema).max(20, '一次最多添加 20 个文件夹'))
   .transform(paths => Array.from(new Set(paths)));
 
@@ -46,6 +47,27 @@ const accountUpdateSchema = accountSchema.partial().extend({
   imapPort: z.number().int().min(1).max(65535).optional(),
   tls: z.boolean().optional(),
 });
+
+const connectionCheckSchema = accountSchema.extend({
+  accountId: z.number().int().positive().optional(),
+  mailboxes: mailboxPathsSchema.optional(),
+  authPassword: z.string().min(1).optional(),
+});
+
+async function resolveConnectionCheck(body: unknown) {
+  const { accountId, mailboxes, authPassword, ...input } = connectionCheckSchema.parse(body);
+  const account = accountId === undefined ? null : await prisma.emailAccount.findUnique({ where: { id: accountId } });
+  if (authPassword) return { params: { ...input, authPassword }, mailboxes, currentMailbox: account?.mailbox ?? input.mailbox };
+  if (!account) throw new ApiError(400, '请输入授权码');
+  if (account.imapHost !== input.imapHost || account.imapPort !== input.imapPort ||
+    account.tls !== input.tls || account.authUser !== input.authUser) {
+    throw new ApiError(400, '连接信息已变更，请输入授权码');
+  }
+  return {
+    params: { ...input, authPassword: decrypt(config.encryptionKey, Buffer.from(account.authPasswordEnc)) },
+    mailboxes, currentMailbox: account.mailbox,
+  };
+}
 
 // ===== 邮箱账户 CRUD =====
 
@@ -210,23 +232,16 @@ router.put(
 router.post(
   '/accounts/test',
   asyncHandler(async (req, res) => {
-    const { accountId, mailboxes, authPassword, ...input } = accountSchema.extend({
-      accountId: z.number().int().positive().optional(),
-      mailboxes: mailboxPathsSchema.optional(),
-      authPassword: z.string().min(1).optional(),
-    }).parse(req.body);
-    const account = accountId === undefined ? null : await prisma.emailAccount.findUnique({ where: { id: accountId } });
-    if (!authPassword && !account) throw new ApiError(400, '请输入授权码');
-    if (!authPassword && account && (
-      account.imapHost !== input.imapHost || account.imapPort !== input.imapPort ||
-      account.tls !== input.tls || account.authUser !== input.authUser
-    )) throw new ApiError(400, '连接信息已变更，请输入授权码');
-    const password = authPassword ?? decrypt(config.encryptionKey, Buffer.from(account!.authPasswordEnc));
-    const result = await testMailboxes({ ...input, authPassword: password },
-      mailboxes?.length ? mailboxes : [account?.mailbox ?? input.mailbox]);
+    const { params, mailboxes, currentMailbox } = await resolveConnectionCheck(req.body);
+    const result = await testMailboxes(params, mailboxes?.length ? mailboxes : [currentMailbox]);
     res.json(result);
   }),
 );
+
+router.post('/accounts/folders', asyncHandler(async (req, res) => {
+  const { params } = await resolveConnectionCheck(req.body);
+  res.json(await listMailboxes(params));
+}));
 
 // 手动同步
 router.post(
