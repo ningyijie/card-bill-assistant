@@ -105,9 +105,20 @@ model Card {
   businessPrimary    Card?     @relation("CardBusinessHierarchy", fields: [businessPrimaryId], references: [id], onDelete: Cascade)
   businessChildren   Card[]    @relation("CardBusinessHierarchy")
   aliases            CardAlias[]
+  annualFeeReviews   AnnualFeeReview[]
 
   @@unique([bankName, cardLast4])
   @@index([businessPrimaryId])
+}
+
+model AnnualFeeReview {
+  cardId   Int
+  card     Card   @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  period   String @db.VarChar(7)
+  currency String @db.VarChar(8)
+  status   String @db.VarChar(16)
+
+  @@id([cardId, period, currency])
 }
 
 /** 不形成独立卡片档案的支付卡号别名，如手机信用卡尾号。 */

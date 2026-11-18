@@ -10,6 +10,7 @@ const prisma = vi.hoisted(() => ({
   customReminderOccurrence: { findMany: vi.fn() },
   emailAccount: { findMany: vi.fn() },
   appSetting: { findUnique: vi.fn() },
+  annualFeeReview: { findMany: vi.fn(async () => []) },
   $executeRaw: vi.fn(),
 }));
 

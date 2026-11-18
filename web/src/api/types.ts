@@ -123,11 +123,29 @@ export interface CardCurrentCycle {
   cardTails: string[];
 }
 
+export type AnnualFeeSettlement = 'automatic' | 'automaticRefund' | 'apply' | 'none';
+export type AnnualFeeReviewStatus = 'pending' | 'requested' | 'refunded' | 'closed';
+
+export interface AnnualFeeTrackingRow {
+  cardId: number;
+  bankName: string;
+  cardLast4: string;
+  period: string;
+  currency: string;
+  amount: number;
+  date: string;
+  settlement: AnnualFeeSettlement | null;
+  manualStatus: AnnualFeeReviewStatus | null;
+  status: 'apply' | 'review' | 'waiting' | 'requested' | 'refunded' | 'closed';
+  refundDate: string | null;
+}
+
 export interface CardAnnualFeePolicy {
   charge: 'annual' | 'firstYearFree' | 'free' | 'other';
   amount?: number;
   currency?: string;
   waiver: 'none' | 'count' | 'points' | 'either' | 'other';
+  settlement?: AnnualFeeSettlement;
   requiredCount?: number;
   confirmedCount?: number;
   requiredPoints?: number;
@@ -445,6 +463,7 @@ export interface DashboardSummary {
   };
   /** 游标之后仍未还款的年费账单聚合；null=无需显著提醒 */
   annualFeeNotice: AnnualFeeNotice | null;
+  annualFeeActionCount?: number;
   upcoming14d: { dueCount: number; statementCount: number; feeCount: number; customCount: number };
   email: { total: number; enabled: number; lastSyncAt: string | null };
   customs: { total: number; enabled: number };

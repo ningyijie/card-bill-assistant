@@ -29,6 +29,7 @@ import { MobileFlow, MobilePullToRefresh, useCoalescedRefresh } from '../compone
 import './dashboard.css';
 import { formatMoney } from '../lib/money';
 import { useHistoryGate } from '../historyGate';
+import { AnnualFeeTracking } from './cards/AnnualFeeTracking';
 
 type AnnualFeeNoticeItem = AnnualFeeNotice['items'][number];
 
@@ -216,6 +217,7 @@ export default function Dashboard() {
   const [markTarget, setMarkTarget] = useState<MarkPaidTarget | null>(null);
   const [annualFeeAcknowledging, setAnnualFeeAcknowledging] = useState(false);
   const [annualFeeSnapshot, setAnnualFeeSnapshot] = useState<AnnualFeeNotice | null>(location.state?.sourceSnapshot?.annualFeeSnapshot ?? null);
+  const [showAnnualFeeTracking, setShowAnnualFeeTracking] = useState(false);
   useSourceSnapshot({ annualFeeSnapshot });
   const [annualFeeDetailLoading, setAnnualFeeDetailLoading] = useState(false);
 
@@ -303,6 +305,17 @@ export default function Dashboard() {
       }
     });
   };
+
+  const feeActionCount = summary?.annualFeeActionCount ?? 0;
+  const feeActionAlert = feeActionCount > 0 && (
+    <Alert
+      type="warning"
+      showIcon
+      title={`${feeActionCount} 笔年费待申请或核对减免`}
+      action={<Button size="small" onClick={() => setShowAnnualFeeTracking(true)}>查看减免记录</Button>}
+    />
+  );
+  const feeTrackingPanel = showAnnualFeeTracking && <AnnualFeeTracking onClose={() => setShowAnnualFeeTracking(false)} />;
 
   // 升级迁移等全局流程改写业务数据后，挂载中的首页各分区全部重新加载。
   useDataChanged(() => {
@@ -528,6 +541,7 @@ export default function Dashboard() {
                   onAcknowledge={() => void acknowledgeAnnualFeeNotice()}
                 />
               )}
+              {feeActionAlert}
             </section>
 
             <Card
@@ -729,6 +743,7 @@ export default function Dashboard() {
           </MobilePullToRefresh>
         </Page>}
         <MarkPaidModal target={markTarget} onClose={() => setMarkTarget(null)} onDone={reloadPaid} />
+        {feeTrackingPanel}
         {annualFeeSnapshot && (
           <MobileFlow title={`年费账单（${annualFeeSnapshot.items.length} 笔）`} onBack={closeAnnualFeePanel}>
             <AnnualFeeNoticeList
@@ -851,6 +866,7 @@ export default function Dashboard() {
           onAcknowledge={() => void acknowledgeAnnualFeeNotice()}
         />
       )}
+      {feeActionAlert}
 
       <div className="dash-section" style={{ marginTop: 16 }}>
         <Card
@@ -1089,6 +1105,7 @@ export default function Dashboard() {
 
     </Page>
     <MarkPaidModal target={markTarget} onClose={() => setMarkTarget(null)} onDone={reloadPaid} />
+    {feeTrackingPanel}
     <Modal
       open={annualFeeSnapshot != null}
       onCancel={closeAnnualFeePanel}

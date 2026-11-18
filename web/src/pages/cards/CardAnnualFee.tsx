@@ -1,6 +1,6 @@
 import { Button, Col, DatePicker, Form, Input, InputNumber, Row, Select, Typography } from 'antd';
 import dayjs from 'dayjs';
-import type { CardAnnualFeePolicy } from '../../api/types';
+import type { AnnualFeeSettlement, CardAnnualFeePolicy } from '../../api/types';
 import { formatMoney } from '../../lib/money';
 
 const charges = {
@@ -17,6 +17,13 @@ const waivers = {
   either: '刷卡次数或积分（二选一）',
   other: '其他减免条件',
 } as const;
+
+export const annualFeeSettlementLabels: Record<AnnualFeeSettlement, string> = {
+  automatic: '满足条件自动减免',
+  automaticRefund: '先扣费，银行自动退回',
+  apply: '先扣费，需申请退回',
+  none: '不支持减免',
+};
 
 function hasCountRule(waiver?: CardAnnualFeePolicy['waiver']) {
   return waiver === 'count' || waiver === 'either';
@@ -84,12 +91,24 @@ export function CardAnnualFeeFields({ value, onChange }: {
             </Form.Item>
           </Col>
           <Col xs={24} sm={12}>
-            <Form.Item label="减免方式" htmlFor="annual-fee-waiver">
+            <Form.Item label="减免条件" htmlFor="annual-fee-waiver">
               <Select<CardAnnualFeePolicy['waiver']>
                 id="annual-fee-waiver"
                 value={value.waiver}
                 options={Object.entries(waivers).map(([key, label]) => ({ value: key as CardAnnualFeePolicy['waiver'], label }))}
                 onChange={setWaiver}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item label="办理方式" htmlFor="annual-fee-settlement">
+              <Select<AnnualFeeSettlement>
+                id="annual-fee-settlement"
+                value={value.settlement}
+                placeholder="未设置"
+                allowClear
+                options={Object.entries(annualFeeSettlementLabels).map(([value, label]) => ({ value, label }))}
+                onChange={(settlement) => update({ settlement })}
               />
             </Form.Item>
           </Col>
@@ -156,9 +175,10 @@ export function CardAnnualFeeFields({ value, onChange }: {
   );
 }
 
-export function CardAnnualFeeSummary({ policy, onEdit }: {
+export function CardAnnualFeeSummary({ policy, onEdit, onTrack }: {
   policy: CardAnnualFeePolicy;
   onEdit: () => void;
+  onTrack?: () => void;
 }) {
   const expired = policy.cycleEnd && policy.cycleEnd < dayjs().format('YYYY-MM-DD');
   const count = policy.requiredCount;
@@ -171,11 +191,15 @@ export function CardAnnualFeeSummary({ policy, onEdit }: {
         <Typography.Text strong>
           {policy.charge === 'free' ? charges.free : policy.amount != null ? `标准年费 ${formatMoney(policy.amount, policy.currency)}` : '年费与减免'}
         </Typography.Text>
-        <Button type="link" size="small" onClick={onEdit}>编辑年费</Button>
+        <div>
+          <Button type="link" size="small" onClick={onEdit}>编辑年费</Button>
+          {onTrack && <Button type="link" size="small" onClick={onTrack}>减免记录</Button>}
+        </div>
       </div>
       {policy.charge !== 'free' && (
         <Typography.Text type="secondary">{charges[policy.charge]} · {waivers[policy.waiver]}</Typography.Text>
       )}
+      {policy.settlement && <div>{annualFeeSettlementLabels[policy.settlement]}</div>}
       {hasCountRule(policy.waiver) && count != null && (
         <div>
           {expired ? '本期刷卡减免已截止' : remainingCount === null ? `需刷 ${count} 笔 · 进度待核对`

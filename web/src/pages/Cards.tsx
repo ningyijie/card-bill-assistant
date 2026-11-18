@@ -49,6 +49,7 @@ import {
 import { Popup, SearchBar } from 'antd-mobile';
 import dayjs from 'dayjs';
 import { useLocation, useNavigate } from 'react-router';
+import { AnnualFeeTracking } from './cards/AnnualFeeTracking';
 import { formatMoney } from '../lib/money';
 import {
   businessCoverOf,
@@ -1551,6 +1552,7 @@ export default function Cards() {
   /** 展开的账户组弹窗 key（多卡组点击卡片本体；数据随 rows 刷新） */
   const [groupModalKey, setGroupModalKey] = useState<string | null>(location.state?.sourceSnapshot?.groupModalKey ?? null);
   const [groupDetailCardId, setGroupDetailCardId] = useState<number | null>(location.state?.sourceSnapshot?.groupDetailCardId ?? null);
+  const [annualFeeTrackingCardId, setAnnualFeeTrackingCardId] = useState<number | null>(null);
   const [markTarget, setMarkTarget] = useState<MarkPaidTarget | null>(null);
   const [cardDetailReloadKey, setCardDetailReloadKey] = useState(0);
   /** 设为优先展示请求中的卡 ID */
@@ -2081,8 +2083,11 @@ export default function Cards() {
         showBilling={card.businessRole !== 'secondary' && card.businessRole !== 'supplementary'}
         showBusinessRole={shouldShowBusinessRole(group.cards, plain)}
       />
-      {card.annualFeePolicy && (
-        <CardAnnualFeeSummary policy={card.annualFeePolicy} onEdit={() => openEditing(card)} />
+      {card.annualFeePolicy ? (
+        <CardAnnualFeeSummary policy={card.annualFeePolicy} onEdit={() => openEditing(card)}
+          onTrack={() => setAnnualFeeTrackingCardId(card.id)} />
+      ) : (
+        <Button type="link" size="small" onClick={() => setAnnualFeeTrackingCardId(card.id)}>年费减免记录</Button>
       )}
     </>
   );
@@ -2113,6 +2118,9 @@ export default function Cards() {
   const withAbnormalFlow = (content: React.ReactNode) => (
     <>
       {content}
+      {annualFeeTrackingCardId !== null && (
+        <AnnualFeeTracking cardId={annualFeeTrackingCardId} onClose={() => setAnnualFeeTrackingCardId(null)} />
+      )}
       <MarkAbnormalModal
         key="cards-abnormal-flow"
         target={activeAbnormalTarget}

@@ -10,23 +10,25 @@ const prisma = vi.hoisted(() => ({
 }));
 const syncAllEnabledAccounts = vi.hoisted(() => vi.fn());
 const collectTodayEvents = vi.hoisted(() => vi.fn());
+const collectAnnualFeeReminderEvents = vi.hoisted(() => vi.fn());
 const resolveNotificationChannels = vi.hoisted(() => vi.fn());
 const sendNotificationChannelBatch = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/lib/prisma', () => ({ prisma }));
 vi.mock('../src/modules/email/email.service', () => ({ syncAllEnabledAccounts }));
-vi.mock('../src/modules/reminders/reminder.engine', () => ({ collectTodayEvents }));
+vi.mock('../src/modules/reminders/reminder.engine', () => ({ collectTodayEvents, collectAnnualFeeReminderEvents }));
 vi.mock('../src/notify/notification.service', () => ({
   resolveNotificationChannels,
   sendNotificationChannelBatch,
 }));
 
-import { runDailyReminderJob } from '../src/jobs/scheduler';
+import { runDailyReminderJob, runSchedulerTick } from '../src/jobs/scheduler';
 
 describe('runDailyReminderJob 通用通知渠道', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     syncAllEnabledAccounts.mockResolvedValue(undefined);
+    collectAnnualFeeReminderEvents.mockResolvedValue([]);
     collectTodayEvents.mockResolvedValue({
       now: new Date('2026-08-24T00:00:00.000Z'),
       cardEvents: [{ type: 'card_due', refId: -7, cardId: 7, title: '还款提醒', body: '今天还款' }],
@@ -56,6 +58,23 @@ describe('runDailyReminderJob 通用通知渠道', () => {
       data: expect.objectContaining({ channel: 'future-channel', status: 'pending' }),
     }));
     expect(sendNotificationChannelBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('定时同步后立即推送待申请年费，按固定账期日期去重', async () => {
+    const fireDate = new Date('2026-07-31T16:00:00.000Z');
+    collectAnnualFeeReminderEvents.mockResolvedValue([{
+      type: 'annual_fee_apply', refId: 42, fireDate, title: '年费减免待处理', body: '请申请减免',
+    }]);
+    resolveNotificationChannels.mockResolvedValue([
+      { type: 'bark', name: 'Bark', enabled: true, config: {} },
+    ]);
+    await runSchedulerTick(new Date(2026, 7, 24, 10, 30));
+    expect(syncAllEnabledAccounts).toHaveBeenCalledOnce();
+    expect(collectTodayEvents).not.toHaveBeenCalled();
+    expect(prisma.notifyLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: 'annual_fee_apply', refId: 42, fireDate }),
+    });
+    expect(sendNotificationChannelBatch).toHaveBeenCalledOnce();
   });
 
   it('某个渠道失败只回滚该渠道的预占日志', async () => {

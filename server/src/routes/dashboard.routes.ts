@@ -14,6 +14,7 @@ import {
   parseAnnualFeeNoticeCursor,
   serializeAnnualFeeNoticeCursor,
 } from '../modules/bills/annual-fee-notice';
+import { annualFeeTransactions, loadAnnualFeeTracking, needsAnnualFeeAction } from '../modules/bills/annual-fee-tracking';
 import { buildBillsByCard, collectUpcoming, type CardLike } from '../modules/reminders/reminder.engine';
 import { materializeCustomReminderOccurrences, occurrenceToView } from '../modules/reminders/custom-occurrences';
 
@@ -37,17 +38,7 @@ router.get(
       prisma.bill.findMany({
         include: {
           cards: { select: { cardId: true } },
-          transactions: {
-            where: { description: { contains: '年费' } },
-            select: {
-              cardId: true,
-              cardLast4: true,
-              bankName: true,
-              description: true,
-              amount: true,
-              currency: true,
-            },
-          },
+          transactions: annualFeeTransactions,
         },
       }),
       prisma.customReminder.findMany(),
@@ -146,6 +137,7 @@ router.get(
       cards,
       parseAnnualFeeNoticeCursor(annualFeeCursorRow?.value),
     );
+    const annualFeeActionCount = (await loadAnnualFeeTracking(cards, billRows)).filter(needsAnnualFeeAction).length;
 
     // 即将到期视图（14 天，合并账单按关联分桶）
     const billsByCard = buildBillsByCard(billRows);
@@ -181,6 +173,7 @@ router.get(
         currency: 'CNY',
       },
       annualFeeNotice,
+      annualFeeActionCount,
       upcoming14d: {
         dueCount: upcoming.filter((i) =>
           (i.type === 'due' && !i.paid)

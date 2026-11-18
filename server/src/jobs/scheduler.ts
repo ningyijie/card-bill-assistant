@@ -3,7 +3,7 @@ import type { ScheduledTask } from 'node-cron';
 import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { today } from '../lib/dates';
-import { collectTodayEvents } from '../modules/reminders/reminder.engine';
+import { collectAnnualFeeReminderEvents, collectTodayEvents } from '../modules/reminders/reminder.engine';
 import { syncAllEnabledAccounts } from '../modules/email/email.service';
 import { resolveNotificationChannels, sendNotificationChannelBatch } from '../notify/notification.service';
 import { getUpgradeRuntimeState, isUpgradeBusinessBlocked } from '../modules/upgrades/upgrade.runtime';
@@ -37,17 +37,32 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
   });
   if (isUpgradeBusinessBlocked()) return { pushed: 0, skipped: 0, failed: 0 };
 
-  const { now, cardEvents, customEvents } = await collectTodayEvents();
-  const all = [
+  const [{ now, cardEvents, customEvents }, annualFeeEvents] = await Promise.all([
+    collectTodayEvents(),
+    collectAnnualFeeReminderEvents(),
+  ]);
+  return sendReminderEvents([
     ...cardEvents.map((e) => ({
       type: e.type,
       refId: e.refId,
       title: e.title,
       body: e.body,
+      fireDate: now,
     })),
-    ...customEvents.map((e) => ({ type: e.type, refId: e.refId, title: e.title, body: e.body })),
-  ];
+    ...customEvents.map((e) => ({ type: e.type, refId: e.refId, title: e.title, body: e.body, fireDate: now })),
+    ...annualFeeEvents,
+  ]);
+}
 
+interface ReminderDelivery {
+  type: string;
+  refId: number;
+  title: string;
+  body: string;
+  fireDate: Date;
+}
+
+async function sendReminderEvents(all: ReminderDelivery[]): Promise<{ pushed: number; skipped: number; failed: number }> {
   const result = { pushed: 0, skipped: 0, failed: 0 };
   if (all.length === 0) {
     console.log('[job] 今日无待提醒事项');
@@ -73,7 +88,7 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
           data: {
             type: event.type,
             refId: event.refId,
-            fireDate: now,
+            fireDate: event.fireDate,
             channel: deliveryKey,
             status: 'pending',
             sentAt: leaseAt,
@@ -90,7 +105,7 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
           where: {
             type: event.type,
             refId: event.refId,
-            fireDate: now,
+            fireDate: event.fireDate,
             channel: deliveryKey,
             status: 'pending',
             sentAt: { lte: staleBefore },
@@ -107,7 +122,7 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
             type_refId_fireDate_channel: {
               type: event.type,
               refId: event.refId,
-              fireDate: now,
+              fireDate: event.fireDate,
               channel: deliveryKey,
             },
           },
@@ -153,6 +168,9 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
     await runDailyReminderJob();
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {
     await syncAllEnabledAccounts();
+    if (isUpgradeBusinessBlocked()) return;
+    const annualFeeEvents = await collectAnnualFeeReminderEvents();
+    if (annualFeeEvents.length > 0) await sendReminderEvents(annualFeeEvents);
   }
 }
 

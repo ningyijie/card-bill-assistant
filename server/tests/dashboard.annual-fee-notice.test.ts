@@ -10,6 +10,7 @@ const prisma = vi.hoisted(() => ({
   customReminderOccurrence: { findMany: vi.fn() },
   emailAccount: { findMany: vi.fn() },
   appSetting: { findUnique: vi.fn() },
+  annualFeeReview: { findMany: vi.fn(async () => []) },
   $executeRaw: vi.fn(),
 }));
 
@@ -271,6 +272,22 @@ describe('首页年费提醒聚合', () => {
       },
     }));
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('账单付清且提醒已读后仍显示年费减免待处理', async () => {
+    const paidBill = bill(1, { paidStatus: 'paid' });
+    prisma.card.findMany.mockResolvedValue([{
+      ...card(1, '招商银行', '3096'), annualFeePolicy: { settlement: 'apply' },
+    }]);
+    prisma.bill.findMany.mockResolvedValue([paidBill]);
+    prisma.appSetting.findUnique.mockResolvedValue({
+      value: serializeAnnualFeeNoticeCursor({ createdAt: paidBill.createdAt, billId: paidBill.id }),
+    });
+    await withServer(async (url) => {
+      const response = await fetch(`${url}/api/dashboard/summary`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ annualFeeNotice: null, annualFeeActionCount: 1 });
+    });
   });
 
   it('点击期间目标账单已还款时成功收口但不修改游标', async () => {

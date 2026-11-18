@@ -8,7 +8,10 @@ const remindUpgrade = vi.hoisted(() => vi.fn());
 vi.mock('node-cron', () => ({ default: { schedule: cron.schedule } }));
 vi.mock('../src/lib/prisma', () => ({ prisma: {} }));
 vi.mock('../src/modules/email/email.service', () => ({ syncAllEnabledAccounts: sync }));
-vi.mock('../src/modules/reminders/reminder.engine', () => ({ collectTodayEvents: collect }));
+vi.mock('../src/modules/reminders/reminder.engine', () => ({
+  collectTodayEvents: collect,
+  collectAnnualFeeReminderEvents: vi.fn(async () => []),
+}));
 vi.mock('../src/modules/upgrades/upgrade-reminder', () => ({ runUpgradeReminderCheck: remindUpgrade }));
 vi.mock('../src/notify/notification.service', () => ({ resolveNotificationChannels: vi.fn(), sendNotificationChannelBatch: vi.fn() }));
 

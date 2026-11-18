@@ -5,6 +5,7 @@ import {
   dayOf,
   daysBetween,
   formatCn,
+  fromYmd,
   monthParts,
   periodOf,
   sameDay,
@@ -13,6 +14,7 @@ import {
   ymd,
 } from '../../lib/dates';
 import { computeRuleCycle, openMissingCycle } from '../bills/ledger';
+import { loadAnnualFeeTracking, needsAnnualFeeAction } from '../bills/annual-fee-tracking';
 import { materializeCustomReminderOccurrences, occurrenceToView, type CustomOccurrenceLike } from './custom-occurrences';
 import { customTargetDatesBetween, type CustomScheduleLike } from './custom-schedule';
 
@@ -591,4 +593,25 @@ export async function collectTodayEvents() {
   );
 
   return { now, cardEvents, customEvents };
+}
+
+export async function collectAnnualFeeReminderEvents(now: Date = today()) {
+  const annualFeeTracking = await loadAnnualFeeTracking();
+  const annualFeeActionsByBill = new Map<number, { period: string; actions: string[] }>();
+  for (const row of annualFeeTracking.filter(needsAnnualFeeAction)) {
+    const age = daysBetween(fromYmd(row.date), now);
+    // 历史补录仍可在页面处理，推送只覆盖近期扣费。
+    if (age < 0 || age > 62) continue;
+    const group = annualFeeActionsByBill.get(row.billId) ?? { period: row.period, actions: [] };
+    group.actions.push(`${row.bankName}（${row.cardLast4}）已扣年费 ${money(row.currency, row.amount)}，${row.status === 'apply' ? '请申请减免' : '请核对能否申请减免'}`);
+    annualFeeActionsByBill.set(row.billId, group);
+  }
+  return [...annualFeeActionsByBill].map(([refId, { period, actions }]) => ({
+    type: 'annual_fee_apply',
+    refId,
+    // 此类通知按账单去重，发送失败可跨日重试。
+    fireDate: fromYmd(`${period}-01`),
+    title: '年费减免待处理',
+    body: actions.join('\n'),
+  }));
 }

@@ -11,6 +11,7 @@ import { lastPassedCycle, openMissingCycle } from '../modules/bills/ledger';
 import { fromYmd, monthParts, today } from '../lib/dates';
 import { allCardGroups, recomputePrimary } from '../lib/card-groups';
 import { reconcileUnfinishedPlaceholderCards } from '../lib/card-placeholders';
+import { annualFeeReviewStatuses, annualFeeSettlementModes, loadAnnualFeeTracking } from '../modules/bills/annual-fee-tracking';
 
 const router = Router();
 router.use(requireAuth);
@@ -26,6 +27,7 @@ const annualFeePolicySchema = z.object({
   amount: z.number().nonnegative().max(999_999_999.99).optional(),
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
   waiver: z.enum(['none', 'count', 'points', 'either', 'other']),
+  settlement: z.enum(annualFeeSettlementModes).optional(),
   requiredCount: z.number().int().min(1).max(100_000).optional(),
   confirmedCount: z.number().int().min(0).max(100_000).optional(),
   requiredPoints: z.number().int().min(1).max(1_000_000_000).optional(),
@@ -245,6 +247,46 @@ router.post(
     });
     await recomputePrimary();
     res.status(201).json({ id: card.id });
+  }),
+);
+
+const annualFeeReviewKeySchema = z.object({
+  id: z.coerce.number().int().positive(),
+  period: z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/),
+  currency: z.string().regex(/^[A-Z0-9]{3,8}$/),
+});
+
+router.get(
+  '/annual-fees',
+  asyncHandler(async (req, res) => {
+    const query = z.object({
+      cardId: z.coerce.number().int().positive().optional(),
+    }).parse(req.query);
+    const rows = await loadAnnualFeeTracking();
+    res.json(query.cardId === undefined ? rows : rows.filter((row) => row.cardId === query.cardId));
+  }),
+);
+
+router.put(
+  '/:id/annual-fees/:period/:currency',
+  asyncHandler(async (req, res) => {
+    const { id: cardId, period, currency } = annualFeeReviewKeySchema.parse(req.params);
+    const { status } = z.object({ status: z.enum(annualFeeReviewStatuses).nullable() }).strict().parse(req.body);
+    const key = { cardId, period, currency };
+    const rows = await loadAnnualFeeTracking();
+    if (!rows.some((row) => row.cardId === cardId && row.period === period && row.currency === currency)) {
+      throw new ApiError(404, '未找到这笔年费记录');
+    }
+    if (status === null) {
+      await prisma.annualFeeReview.deleteMany({ where: key });
+    } else {
+      await prisma.$executeRaw`
+        INSERT INTO \`AnnualFeeReview\` (\`cardId\`, \`period\`, \`currency\`, \`status\`)
+        VALUES (${cardId}, ${period}, ${currency}, ${status})
+        ON DUPLICATE KEY UPDATE \`status\` = ${status}
+      `;
+    }
+    res.json({ ok: true });
   }),
 );
 
