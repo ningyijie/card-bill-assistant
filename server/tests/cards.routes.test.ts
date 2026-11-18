@@ -178,6 +178,37 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
     expect(recomputePrimary).not.toHaveBeenCalled();
   });
 
+  it('副卡可单独保存年费减免条件，已刷次数为零时也会校验周期', async () => {
+    prisma.card.findUnique.mockResolvedValue(existingCard({
+      businessRole: 'secondary',
+      businessPrimaryId: 1,
+    }));
+    const policy = {
+      charge: 'annual',
+      amount: 300,
+      currency: 'CNY',
+      waiver: 'either',
+      requiredCount: 6,
+      confirmedCount: 0,
+      requiredPoints: 40_000,
+    };
+    await withServer(async (url) => {
+      const save = (annualFeePolicy: Record<string, unknown>) => fetch(`${url}/api/cards/2`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ annualFeePolicy }),
+      });
+      const invalid = await save(policy);
+      expect(invalid.status).toBe(400);
+      expect(prisma.card.update).not.toHaveBeenCalled();
+      const valid = { ...policy, cycleEnd: '2027-11-18' };
+      const saved = await save(valid);
+      expect(saved.status).toBe(200);
+      expect(prisma.card.update).toHaveBeenCalledWith({ where: { id: 2 }, data: { annualFeePolicy: valid } });
+      expect(prisma.card.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
   it('改状态为冻结触发 recomputePrimary（主卡让位）', async () => {
     await withServer(async (url) => {
       const res = await fetch(`${url}/api/cards/2`, {

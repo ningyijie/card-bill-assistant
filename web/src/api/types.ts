@@ -123,6 +123,19 @@ export interface CardCurrentCycle {
   cardTails: string[];
 }
 
+export interface CardAnnualFeePolicy {
+  charge: 'annual' | 'firstYearFree' | 'free' | 'other';
+  amount?: number;
+  currency?: string;
+  waiver: 'none' | 'count' | 'points' | 'either' | 'other';
+  requiredCount?: number;
+  confirmedCount?: number;
+  requiredPoints?: number;
+  availablePoints?: number;
+  cycleEnd?: string;
+  notes?: string;
+}
+
 export interface CardRow {
   id: number;
   bankName: string;
@@ -145,6 +158,7 @@ export interface CardRow {
   annualFeeDate: string | null;
   /** true=用户手动设置，自动识别不覆盖 */
   annualFeeDateManual: boolean;
+  annualFeePolicy?: CardAnnualFeePolicy | null;
   /** 卡片配色序号（前端色表下标），null=按卡片 id 自动轮换 */
   colorPalette: number | null;
   /** 账单明确的业务身份；standalone 表示普通套卡。 */
@@ -189,6 +203,7 @@ export interface CardInput {
   dueOffsetDays?: number | null;
   remindDaysBefore?: number[];
   annualFeeDate?: string | null;
+  annualFeePolicy?: CardAnnualFeePolicy | null;
   /** 卡片配色序号；null=自动分配，缺省不改动 */
   colorPalette?: number | null;
   status?: 'active' | 'frozen' | 'closed';

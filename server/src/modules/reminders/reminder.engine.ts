@@ -30,6 +30,7 @@ export interface CardLike {
   businessPrimaryId?: number | null;
   /** 年费收取日（每年该月日收取，null=未设置） */
   annualFeeDate?: Date | null;
+  annualFeePolicy?: unknown;
 }
 
 export interface BillLike {
@@ -112,7 +113,8 @@ export function annualFeeSchedule(
   bills: BillLike[],
   today: Date,
 ): { feeDate: Date; feePeriod: string; prevPeriod: string; prevDue: Date } | null {
-  if (!card.annualFeeDate) return null;
+  const policy = card.annualFeePolicy;
+  if (!card.annualFeeDate || (policy && typeof policy === 'object' && 'charge' in policy && policy.charge === 'free')) return null;
   const anchor = ymd(shanghaiMidnight(card.annualFeeDate));
   const feeMonth = Number(anchor.slice(5, 7));
   const feeDay = Number(anchor.slice(8, 10));

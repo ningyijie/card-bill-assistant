@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '../generated/prisma/client';
 import { prisma } from '../lib/prisma';
 import { ApiError, asyncHandler } from '../lib/errors';
 import { requireAuth } from './middleware';
@@ -20,6 +21,22 @@ const annualFeeDateSchema = z
   .nullable()
   .optional();
 
+const annualFeePolicySchema = z.object({
+  charge: z.enum(['annual', 'firstYearFree', 'free', 'other']),
+  amount: z.number().nonnegative().max(999_999_999.99).optional(),
+  currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+  waiver: z.enum(['none', 'count', 'points', 'either', 'other']),
+  requiredCount: z.number().int().min(1).max(100_000).optional(),
+  confirmedCount: z.number().int().min(0).max(100_000).optional(),
+  requiredPoints: z.number().int().min(1).max(1_000_000_000).optional(),
+  availablePoints: z.number().int().min(0).max(1_000_000_000).optional(),
+  cycleEnd: z.iso.date().optional(),
+  notes: z.string().trim().max(400).optional(),
+}).refine(({ amount, currency }) => amount === undefined || !!currency, '请填写年费币种')
+  .refine(({ waiver, requiredCount }) => !['count', 'either'].includes(waiver) || requiredCount !== undefined, '请填写减免所需刷卡次数')
+  .refine(({ waiver, requiredPoints }) => !['points', 'either'].includes(waiver) || requiredPoints !== undefined, '请填写抵扣所需积分')
+  .refine(({ confirmedCount, cycleEnd }) => confirmedCount === undefined || !!cycleEnd, '记录已刷次数时请填写本期截止日');
+
 const cardCreateSchema = z.object({
   bankName: z.string().trim().min(1, '银行名不能为空'),
   cardLast4: z.string().regex(/^\d{4}$/, '卡号后 4 位必须为 4 位数字'),
@@ -32,6 +49,7 @@ const cardCreateSchema = z.object({
   dueOffsetDays: z.number().int().min(0).max(40).nullable().optional(),
   remindDaysBefore: z.array(z.number().int().min(0).max(60)).default([3, 1, 0]),
   annualFeeDate: annualFeeDateSchema,
+  annualFeePolicy: annualFeePolicySchema.nullable().optional(),
   /** 卡片配色序号（前端色表下标，上限与 CARD_PALETTE_COUNT-1 联动）；null = 自动分配 */
   colorPalette: z.number().int().min(0).max(31).nullable().optional(),
 });
@@ -49,6 +67,7 @@ const cardUpdateSchema = z.object({
   dueOffsetDays: z.number().int().min(0).max(40).nullable().optional(),
   remindDaysBefore: z.array(z.number().int().min(0).max(60)).optional(),
   annualFeeDate: annualFeeDateSchema,
+  annualFeePolicy: annualFeePolicySchema.nullable().optional(),
   colorPalette: z.number().int().min(0).max(31).nullable().optional(),
   status: z.enum(['active', 'frozen', 'closed']).optional(),
 }).strict();
@@ -147,6 +166,7 @@ router.get(
           remindDaysBefore: card.remindDaysBefore,
           annualFeeDate: card.annualFeeDate?.toISOString() ?? null,
           annualFeeDateManual: card.annualFeeDateManual,
+          annualFeePolicy: card.annualFeePolicy,
           colorPalette: card.colorPalette,
           businessRole: card.businessRole,
           businessPrimaryCardId: card.businessPrimaryId,
@@ -216,6 +236,7 @@ router.post(
         remindDaysBefore: input.remindDaysBefore,
         annualFeeDate: input.annualFeeDate ? fromYmd(input.annualFeeDate) : null,
         annualFeeDateManual: input.annualFeeDate ? true : false,
+        ...(input.annualFeePolicy ? { annualFeePolicy: input.annualFeePolicy } : {}),
         colorPalette: input.colorPalette ?? null,
         source: 'manual',
       } });
@@ -263,6 +284,7 @@ router.get(
       remindDaysBefore: card.remindDaysBefore,
       annualFeeDate: card.annualFeeDate?.toISOString() ?? null,
       annualFeeDateManual: card.annualFeeDateManual,
+      annualFeePolicy: card.annualFeePolicy,
       colorPalette: card.colorPalette,
       businessRole: card.businessRole,
       businessPrimaryCardId: card.businessPrimaryId,
@@ -351,6 +373,7 @@ router.put(
             }
           : {}),
         ...(input.colorPalette !== undefined ? { colorPalette: input.colorPalette } : {}),
+        ...(input.annualFeePolicy !== undefined ? { annualFeePolicy: input.annualFeePolicy ?? Prisma.DbNull } : {}),
       };
     let hiddenPlaceholder = false;
     await prisma.$transaction(async (tx) => {

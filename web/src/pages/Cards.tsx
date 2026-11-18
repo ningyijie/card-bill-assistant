@@ -74,6 +74,7 @@ import {
 } from '../components/MobilePrimitives';
 import { useResetOnModeChange, useResponsive, type ResponsiveMode } from '../responsive';
 import MobileCardDetail from './cards/MobileCardDetail';
+import { CardAnnualFeeFields, CardAnnualFeeSummary, validateAnnualFeePolicy } from './cards/CardAnnualFee';
 import CardBillSection from '../components/CardBillSection';
 import { useSourceSnapshot } from '../lib/billNavigation';
 import { useViewState } from '../lib/viewState';
@@ -136,6 +137,7 @@ interface CardFormValues {
   dueOffsetDays?: number | null;
   remindDaysBefore: number[];
   annualFeeDate?: dayjs.Dayjs | null;
+  annualFeePolicy?: CardInput['annualFeePolicy'];
   colorPalette?: number | null;
 }
 
@@ -157,6 +159,7 @@ function cardFormInitialValues(initial?: CardRow | null): Partial<CardFormValues
     dueOffsetDays: initial.dueOffsetDays,
     remindDaysBefore: initial.remindDaysBefore,
     annualFeeDate: initial.annualFeeDate ? dayjs(initial.annualFeeDate) : null,
+    annualFeePolicy: initial.annualFeePolicy ?? null,
     colorPalette: initial.colorPalette ?? null,
   };
 }
@@ -179,6 +182,7 @@ function normalizedCardFormValues(values: Partial<CardFormValues>) {
     dueOffsetDays: values.dueRule === 'offset' ? values.dueOffsetDays ?? null : null,
     remindDaysBefore: [...(values.remindDaysBefore ?? [])].sort((a, b) => a - b),
     annualFeeDate: values.annualFeeDate ? values.annualFeeDate.format('YYYY-MM-DD') : null,
+    annualFeePolicy: values.annualFeePolicy ?? null,
     colorPalette: values.colorPalette ?? null,
   };
 }
@@ -361,6 +365,7 @@ function CardForm({
             ...(initial.businessRole === 'supplementary' ? { holderName: v.holderName } : {}),
             nickname: v.nickname,
             annualFeeDate,
+            annualFeePolicy: v.annualFeePolicy,
             colorPalette: v.colorPalette ?? null,
           });
           return;
@@ -506,6 +511,12 @@ function CardForm({
           </Form.Item>
           </>
           )}
+        </Col>
+        <Col span={24}>
+          <h3 className="cards-edit-section-title">年费与减免</h3>
+          <Form.Item name="annualFeePolicy" rules={[{ validator: validateAnnualFeePolicy }]}>
+            <CardAnnualFeeFields />
+          </Form.Item>
         </Col>
       </Row>
     </Form>
@@ -893,7 +904,7 @@ function nextFeeOfGroup(cards: CardRow[]): { label: string; lines: string[] } | 
   const today = dayjs().startOf('day');
   const items: Array<{ line: string; next: dayjs.Dayjs }> = [];
   for (const c of cards) {
-    if (!c.annualFeeDate) continue;
+    if (!c.annualFeeDate || c.annualFeePolicy?.charge === 'free') continue;
     const src = dayjs(c.annualFeeDate);
     let next = src.year(today.year()).startOf('day');
     if (next.isBefore(today, 'day')) next = next.add(1, 'year');
@@ -1629,6 +1640,7 @@ export default function Cards() {
       }
       let best = Infinity;
       for (const c of g.cards) {
+        if (c.annualFeePolicy?.charge === 'free') continue;
         const d = daysToNextAnnualFee(today, c.annualFeeDate);
         if (d < best) best = d;
       }
@@ -2031,43 +2043,48 @@ export default function Cards() {
 
   /** 渲染一张卡（组内单卡 or 组主显示卡 or 弹窗内每张卡） */
   const renderCard = (card: CardRow, group: CardGroup, plain = false) => (
-    <BankCardItem
-      card={card}
-      revealed={revealed?.responsiveMode === mode && revealed.cardId === card.id ? revealed.secrets : null}
-      groupCards={group.cards}
-      onEye={() => { if (groupModalKey) setGroupDetailCardId(card.id); onEye(card); }}
-      onEdit={() => openEditing(card)}
-      onSecret={() => { if (groupModalKey) setGroupDetailCardId(card.id); onSecretEntry(card); }}
-      onMobileActions={() =>
-        setMobileCardAction({
-          cardId: card.id,
-          groupKey: group.key,
-          allowSetPrimary: plain && canSetPrimary(group, card),
-        })
-      }
-      onAbnormal={() => {
-        setRevealed(null);
-        setAbnormalTarget({
-          cardId: card.id,
-          bankName: card.bankName,
-          cardLast4: card.displayLast4,
-          status: card.status,
-          responsiveMode: mode,
-          flowId: ++abnormalFlowSeq.current,
-        });
-      }}
-      onCardClick={!plain && (isMobile || group.cards.length > 1) ? () => {
-        setGroupDetailCardId(card.id);
-        setGroupModalKey(group.key);
-      } : undefined}
-      allowSetPrimary={plain && canSetPrimary(group, card)}
-      onRequestConfirm={(action) => requestConfirm(action, card)}
-      primaryPending={primaryPendingId != null}
-      secretPending={secretPendingCardIds.has(card.id)}
-      plain={plain}
-      showBilling={card.businessRole !== 'secondary' && card.businessRole !== 'supplementary'}
-      showBusinessRole={shouldShowBusinessRole(group.cards, plain)}
-    />
+    <>
+      <BankCardItem
+        card={card}
+        revealed={revealed?.responsiveMode === mode && revealed.cardId === card.id ? revealed.secrets : null}
+        groupCards={group.cards}
+        onEye={() => { if (groupModalKey) setGroupDetailCardId(card.id); onEye(card); }}
+        onEdit={() => openEditing(card)}
+        onSecret={() => { if (groupModalKey) setGroupDetailCardId(card.id); onSecretEntry(card); }}
+        onMobileActions={() =>
+          setMobileCardAction({
+            cardId: card.id,
+            groupKey: group.key,
+            allowSetPrimary: plain && canSetPrimary(group, card),
+          })
+        }
+        onAbnormal={() => {
+          setRevealed(null);
+          setAbnormalTarget({
+            cardId: card.id,
+            bankName: card.bankName,
+            cardLast4: card.displayLast4,
+            status: card.status,
+            responsiveMode: mode,
+            flowId: ++abnormalFlowSeq.current,
+          });
+        }}
+        onCardClick={!plain && (isMobile || group.cards.length > 1) ? () => {
+          setGroupDetailCardId(card.id);
+          setGroupModalKey(group.key);
+        } : undefined}
+        allowSetPrimary={plain && canSetPrimary(group, card)}
+        onRequestConfirm={(action) => requestConfirm(action, card)}
+        primaryPending={primaryPendingId != null}
+        secretPending={secretPendingCardIds.has(card.id)}
+        plain={plain}
+        showBilling={card.businessRole !== 'secondary' && card.businessRole !== 'supplementary'}
+        showBusinessRole={shouldShowBusinessRole(group.cards, plain)}
+      />
+      {card.annualFeePolicy && (
+        <CardAnnualFeeSummary policy={card.annualFeePolicy} onEdit={() => openEditing(card)} />
+      )}
+    </>
   );
 
   const mobileConfirmLoading =

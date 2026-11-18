@@ -209,6 +209,7 @@ async function cleanupSafeOrphans(taskId: number): Promise<void> {
         || card.expDateEnc
         || card.cvvEnc
         || card.annualFeeDateManual
+        || card.annualFeePolicy
         || card.displayLast4 !== card.cardLast4
       );
       if (userData) {

@@ -784,3 +784,22 @@
 .cards-offset-calc-result.is-warn {
   color: var(--ant-color-warning, #d48806);
 }
+.cards-annual-fee-summary {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.cards-annual-fee-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
