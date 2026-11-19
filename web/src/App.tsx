@@ -139,7 +139,7 @@ export default function App() {
         // 接口返回空名/异常数据时回退默认名
         const name = typeof info?.name === 'string' && info.name.trim() ? info.name : DEFAULT_APP_NAME;
         setAppName(name);
-        setAppVersion(typeof info.version === 'string' && /^\d+\.\d+\.\d+$/.test(info.version) ? info.version : null);
+        setAppVersion(typeof info.version === 'string' && /^\d+\.\d+\.\d+(?:-0\.[1-9]\d*)?$/.test(info.version) ? info.version : null);
         document.title = name;
       })
       .catch(() => {/* 网络错误等：保持默认名 */});

@@ -1,4 +1,4 @@
-import { APP_VERSION } from './version';
+import { APP_DISPLAY_VERSION } from './version';
 import 'dotenv/config';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
 
   // 应用信息（免认证：登录页/安装向导需在登录前显示应用名）
   app.get('/api/app', async (_req, res) => {
-    res.set('Cache-Control', 'no-store').json({ name: config.appName, version: APP_VERSION, skin: await activeSkin() });
+    res.set('Cache-Control', 'no-store').json({ name: config.appName, version: APP_DISPLAY_VERSION, skin: await activeSkin() });
   });
 
   // API 路由（安装、认证和升级在业务门禁前，便于必选迁移期间完成登录与确认）

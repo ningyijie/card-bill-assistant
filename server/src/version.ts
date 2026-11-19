@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import nasVersion from '../nas-version.json' with { type: 'json' };
 
 interface PackageMeta {
   version?: unknown;
@@ -17,3 +18,6 @@ function readVersion(): string {
 }
 
 export const APP_VERSION = readVersion();
+
+// NAS 发布时递增 nas-version.json 的 revision，数据库升级继续使用包版本。
+export const APP_DISPLAY_VERSION = `${APP_VERSION}-${nasVersion.revision}`;
