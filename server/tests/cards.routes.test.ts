@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import http from 'node:http';
 import express from 'express';
 import { fromYmd } from '../src/lib/dates';
+import { Prisma } from '../src/generated/prisma/client';
 
 const prisma = vi.hoisted(() => ({
   card: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
@@ -178,34 +179,36 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
     expect(recomputePrimary).not.toHaveBeenCalled();
   });
 
-  it('副卡可单独保存年费减免条件，已刷次数为零时也会校验周期', async () => {
+  it('副卡可单独保存任意已知的年费字段，也可全部留空', async () => {
     prisma.card.findUnique.mockResolvedValue(existingCard({
       businessRole: 'secondary',
       businessPrimaryId: 1,
     }));
-    const policy = {
-      charge: 'annual',
-      amount: 300,
-      currency: 'CNY',
-      waiver: 'either',
-      requiredCount: 6,
-      confirmedCount: 0,
-      requiredPoints: 40_000,
-    };
     await withServer(async (url) => {
       const save = (annualFeePolicy: Record<string, unknown>) => fetch(`${url}/api/cards/2`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ annualFeePolicy }),
       });
-      const invalid = await save(policy);
-      expect(invalid.status).toBe(400);
-      expect(prisma.card.update).not.toHaveBeenCalled();
-      const valid = { ...policy, cycleEnd: '2027-11-18' };
-      const saved = await save(valid);
-      expect(saved.status).toBe(200);
-      expect(prisma.card.update).toHaveBeenCalledWith({ where: { id: 2 }, data: { annualFeePolicy: valid } });
+      const policies = [
+        { amount: 300 },
+        { waiver: 'either' },
+        { confirmedCount: 0 },
+        { availablePoints: 1200 },
+        { settlement: 'apply' },
+        { notes: '柜台申请' },
+      ];
+      for (const policy of policies) {
+        expect((await save(policy)).status).toBe(200);
+        expect(prisma.card.update).toHaveBeenLastCalledWith({ where: { id: 2 }, data: { annualFeePolicy: policy } });
+      }
+      expect((await save({})).status).toBe(200);
+      expect(prisma.card.update).toHaveBeenLastCalledWith({ where: { id: 2 }, data: { annualFeePolicy: Prisma.DbNull } });
       expect(prisma.card.updateMany).not.toHaveBeenCalled();
+      expect((await save({ currency: 'CN' })).status).toBe(400);
+      expect((await save({ amount: -1 })).status).toBe(400);
+      expect((await save({ cycleEnd: '2027-02-30' })).status).toBe(400);
+      expect(prisma.card.update).toHaveBeenCalledTimes(policies.length + 1);
     });
   });
 

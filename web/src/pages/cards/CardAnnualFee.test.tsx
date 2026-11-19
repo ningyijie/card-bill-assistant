@@ -1,7 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CardAnnualFeePolicy } from '../../api/types';
-import { CardAnnualFeeSummary } from './CardAnnualFee';
+import { CardAnnualFeeFields, CardAnnualFeeSummary, validateAnnualFeePolicy } from './CardAnnualFee';
 
 describe('卡片年费进度', () => {
   const policy: CardAnnualFeePolicy = {
@@ -32,5 +32,27 @@ describe('卡片年费进度', () => {
     render(<CardAnnualFeeSummary policy={{ ...policy, cycleEnd: undefined, confirmedCount: undefined }} onEdit={vi.fn()} />);
     expect(screen.getByText(/需刷 6 笔 · 进度待核对/)).toBeTruthy();
     expect(screen.queryByText(/还差 6 笔/)).toBeNull();
+  });
+
+  it('收费方式和减免条件为空时仍可填写其他字段，清空币种时保留金额', async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<CardAnnualFeeFields value={null} onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText('规则备注'), { target: { value: '柜台申请' } });
+    expect(onChange).toHaveBeenLastCalledWith({ notes: '柜台申请' });
+    expect(screen.getByLabelText('需刷次数')).toBeTruthy();
+    expect(screen.getByLabelText('所需积分')).toBeTruthy();
+
+    rerender(<CardAnnualFeeFields value={{ amount: 300, currency: 'USD' }} onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText('币种'), { target: { value: '' } });
+    expect(onChange).toHaveBeenLastCalledWith({ amount: 300, currency: undefined });
+    await expect(validateAnnualFeePolicy(null, { amount: 300, waiver: 'either', confirmedCount: 0 })).resolves.toBeUndefined();
+    await expect(validateAnnualFeePolicy(null, { currency: 'CN' })).rejects.toThrow();
+  });
+
+  it('只填写金额或部分进度时如实展示', () => {
+    render(<CardAnnualFeeSummary policy={{ amount: 300, confirmedCount: 0, availablePoints: 1_200 }} onEdit={vi.fn()} />);
+    expect(screen.getByText('标准年费 300.00')).toBeTruthy();
+    expect(screen.getByText('银行已确认 0 笔')).toBeTruthy();
+    expect(screen.getByText('当前可用 1,200 积分')).toBeTruthy();
   });
 });

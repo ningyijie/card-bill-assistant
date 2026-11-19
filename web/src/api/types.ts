@@ -141,10 +141,10 @@ export interface AnnualFeeTrackingRow {
 }
 
 export interface CardAnnualFeePolicy {
-  charge: 'annual' | 'firstYearFree' | 'free' | 'other';
+  charge?: 'annual' | 'firstYearFree' | 'free' | 'other';
   amount?: number;
   currency?: string;
-  waiver: 'none' | 'count' | 'points' | 'either' | 'other';
+  waiver?: 'none' | 'count' | 'points' | 'either' | 'other';
   settlement?: AnnualFeeSettlement;
   requiredCount?: number;
   confirmedCount?: number;

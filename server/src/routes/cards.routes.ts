@@ -23,10 +23,10 @@ const annualFeeDateSchema = z
   .optional();
 
 const annualFeePolicySchema = z.object({
-  charge: z.enum(['annual', 'firstYearFree', 'free', 'other']),
+  charge: z.enum(['annual', 'firstYearFree', 'free', 'other']).optional(),
   amount: z.number().nonnegative().max(999_999_999.99).optional(),
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
-  waiver: z.enum(['none', 'count', 'points', 'either', 'other']),
+  waiver: z.enum(['none', 'count', 'points', 'either', 'other']).optional(),
   settlement: z.enum(annualFeeSettlementModes).optional(),
   requiredCount: z.number().int().min(1).max(100_000).optional(),
   confirmedCount: z.number().int().min(0).max(100_000).optional(),
@@ -34,10 +34,7 @@ const annualFeePolicySchema = z.object({
   availablePoints: z.number().int().min(0).max(1_000_000_000).optional(),
   cycleEnd: z.iso.date().optional(),
   notes: z.string().trim().max(400).optional(),
-}).refine(({ amount, currency }) => amount === undefined || !!currency, '请填写年费币种')
-  .refine(({ waiver, requiredCount }) => !['count', 'either'].includes(waiver) || requiredCount !== undefined, '请填写减免所需刷卡次数')
-  .refine(({ waiver, requiredPoints }) => !['points', 'either'].includes(waiver) || requiredPoints !== undefined, '请填写抵扣所需积分')
-  .refine(({ confirmedCount, cycleEnd }) => confirmedCount === undefined || !!cycleEnd, '记录已刷次数时请填写本期截止日');
+}).transform((policy) => Object.values(policy).some((value) => value !== undefined && value !== '') ? policy : null);
 
 const cardCreateSchema = z.object({
   bankName: z.string().trim().min(1, '银行名不能为空'),
