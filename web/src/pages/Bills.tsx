@@ -9,6 +9,7 @@ import { Page } from '../components/Layout';
 import { AgendaPage } from '../components/AgendaList';
 import ReminderSettings from '../components/ReminderSettings';
 import BillStatistics from '../components/BillStatistics';
+import BillImageCapture from '../components/BillImageCapture';
 import { useResource } from '../lib/useResource';
 import { useDataChanged } from '../lib/dataChanged';
 import { useResponsive } from '../responsive';
@@ -27,6 +28,8 @@ export default function Bills() {
   const [settings, setSettings] = useState(false);
   const [stats, setStats] = useState(false);
   const [filters, setFilters] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const captureId = params.get('capture') ?? undefined;
   const [revision, setRevision] = useState(0);
   const [cardsRevision, setCardsRevision] = useState(0);
   // 升级迁移等全局流程改写业务数据后，账单清单与筛选用卡片列表全部重新加载。
@@ -44,7 +47,7 @@ export default function Bills() {
     Object.entries(values).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
     next.delete('page'); setParams(next, { replace: true });
   };
-  const query = new URLSearchParams(params); query.set('view', view);
+  const query = new URLSearchParams(params); query.set('view', view); query.delete('capture');
   const scope = new URLSearchParams();
   ['cardId', 'cardIds', 'bank'].forEach(key => { const value = params.get(key); if (value) scope.set(key, value); });
   const searchField = <Input.Search aria-label="搜索账单和提醒" placeholder="搜索银行、卡尾或提醒" allowClear value={search} onChange={event => setSearch(event.target.value)} onSearch={q => update({ q: q.trim() })} />;
@@ -68,12 +71,15 @@ export default function Bills() {
     catch (e) { setRunError(e instanceof Error ? e.message : '推送失败，请重试'); }
     finally { lock.current = false; setRunning(false); }
   };
-  const settingsActions = <Space wrap className="agenda-settings-launch"><Button type={isMobile ? 'default' : 'text'} icon={<ProfileOutlined />} onClick={() => setStats(true)}>账单统计</Button><Button type={isMobile ? 'default' : 'text'} icon={<SettingOutlined />} onClick={() => setSettings(true)}>自定义账单/提醒</Button></Space>;
+  const captureButton = <Button type="primary" className="agenda-capture-launch" onClick={() => setCaptureOpen(true)}>导入账单截图</Button>;
+  const settingsActions = <Space wrap className="agenda-settings-launch">{!isMobile && captureButton}
+    <Button type={isMobile ? 'default' : 'text'} icon={<ProfileOutlined />} onClick={() => setStats(true)}>账单统计</Button><Button type={isMobile ? 'default' : 'text'} icon={<SettingOutlined />} onClick={() => setSettings(true)}>自定义账单/提醒</Button></Space>;
   const controls = <>
     <div className="agenda-toolbar agenda-navigation">
       <Segmented block={isMobile} options={views} value={view} onChange={value => update({ view: String(value) })} />
       {isMobile && <Button icon={<FilterOutlined />} onClick={() => setFilters(true)}>筛选</Button>}
       {isMobile && settingsActions}
+      {isMobile && captureButton}
       {!isMobile && <div className="agenda-table-search">{searchField}</div>}
     </div>
     {!isMobile && fields}
@@ -85,5 +91,8 @@ export default function Bills() {
     <Popup visible={filters} position="bottom" closeOnMaskClick onClose={() => setFilters(false)} bodyClassName="transaction-filter-sheet"><h3 style={{ padding: '16px 20px 0' }}>筛选账单</h3>{fields}<Button type="primary" block style={{ marginBottom: 20 }} onClick={() => setFilters(false)}>查看结果</Button></Popup>
     {settings && <ReminderSettings onClose={() => setSettings(false)} onChanged={changed} />}
     {stats && <BillStatistics scope={scope.toString()} onClose={() => setStats(false)} />}
+    {(captureOpen || captureId) && <BillImageCapture id={captureId} cards={cards.data}
+      onCapture={(id) => { setCaptureOpen(true); update({ capture: id }); }}
+      onClose={() => { setCaptureOpen(false); if (captureId) update({ capture: undefined }); }} />}
   </Page>;
 }

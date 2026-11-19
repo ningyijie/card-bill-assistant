@@ -1,0 +1,32 @@
+.capture-modal-body {
+  max-height: 68dvh;
+  overflow-y: auto;
+  padding-inline: 2px;
+}
+
+.capture-draft-fields,
+.capture-transaction {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+
+.capture-transaction {
+  align-items: end;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, .8fr) auto;
+}
+
+.capture-transaction .ant-form-item,
+.capture-transaction .ant-btn {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 767px) {
+  .bill-center .agenda-capture-launch {
+    grid-column: 1 / -1;
+  }
+
+  .capture-transaction {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

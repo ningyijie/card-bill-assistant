@@ -15,7 +15,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
   // 401 只表示未登录/登录过期；登录接口豁免，避免密码错误也跳走
   if (resp.status === 401 && !path.includes('/auth/login')) {
-    if (window.location.pathname !== '/login') window.location.assign('/login');
+    if (window.location.pathname !== '/login') {
+      const capture = window.location.pathname === '/bills' ? new URLSearchParams(window.location.search).get('capture') : null;
+      window.location.assign(capture ? '/login?' + new URLSearchParams({ capture }) : '/login');
+    }
     throw new ApiError(401, '登录已过期');
   }
   const text = await resp.text();
@@ -28,6 +31,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   upload: <T>(path: string, body: Blob) => request<T>(path, { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body }),
+  uploadForm: <T>(path: string, body: FormData) => request<T>(path, { method: 'POST', headers: {}, body }),
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown, options: Pick<RequestInit, 'signal'> = {}) =>
     request<T>(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined, ...options }),

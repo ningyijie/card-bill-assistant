@@ -16,6 +16,7 @@ import setupRoutes from './routes/setup.routes';
 import authRoutes from './routes/auth.routes';
 import cardsRoutes from './routes/cards.routes';
 import billsRoutes from './routes/bills.routes';
+import billImagesRoutes from './routes/bill-images.routes';
 import remindersRoutes from './routes/reminders.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import emailRoutes from './routes/email.routes';
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
   app.use('/api', upgradeBusinessGate);
   app.use('/api/cards', cardsRoutes);
   app.use('/api/bills', billsRoutes);
+  app.use('/api/bill-images', billImagesRoutes);
   app.use('/api/reminders', remindersRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/email', emailRoutes);

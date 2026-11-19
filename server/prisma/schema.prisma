@@ -208,6 +208,7 @@ model BillTransaction {
   /** 可提取时保留原始交易金额与币种。 */
   originalAmount   Decimal?  @db.Decimal(12, 2)
   originalCurrency String?   @db.VarChar(8)
+  screenshot       Boolean   @default(false)
   sequence         Int
 
   @@unique([billId, sequence])

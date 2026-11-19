@@ -12,6 +12,7 @@ import { daysBetween, dayOf, lastDayOfMonth, monthParts, sameDay, shanghaiMidnig
 import { pickPrimaryId } from '../lib/card-groups';
 import { reconcileUnfinishedPlaceholderCards } from '../lib/card-placeholders';
 import { computeRuleDueDate } from '../modules/bills/ledger';
+import { screenshotTransactionKey } from '../modules/bills/screenshot-parser';
 import { isAccountBillParser } from './registry';
 
 /** 无卡号占位（现行 ---- 与历史 0000） */
@@ -69,7 +70,7 @@ export async function applyParsedBills(mailLogId: number, parserId: string, bill
         });
       }
       return applied.map((row) => row.id);
-    }),
+    }, { isolationLevel: 'Serializable' }),
   );
 }
 
@@ -92,6 +93,7 @@ interface AppliedBill {
   currency: string;
   preferredId: number;
   cardByTail: Map<string, number>;
+  screenshotSequenceStart?: number;
 }
 
 interface ResolvedCard {
@@ -395,6 +397,19 @@ async function applyParsedBillInTransaction(
 
     const billOwnerId = ownerCard?.id ?? primaryCard.id;
     const currency = normalizeCurrency(bill.currency);
+    const cardIds = Array.from(new Set([...memberIds, preferredId]));
+    const linkedCardIds = cardIds.filter((id) => id !== billOwnerId);
+    const screenshotBills = linkedCardIds.length
+      ? await tx.bill.findMany({
+        where: { cardId: { in: linkedCardIds }, period, currency, source: 'screenshot' },
+        select: { id: true, source: true, paidStatus: true, paidAt: true, paidAmount: true },
+      })
+      : [];
+    const screenshotTwins = screenshotBills.filter((row) => row.source === 'screenshot');
+    const screenshotPayment = [...screenshotTwins].sort((a, b) =>
+      Number(b.paidStatus === 'paid') - Number(a.paidStatus === 'paid')
+      || Number(b.paidAmount ?? 0) - Number(a.paidAmount ?? 0) || b.id - a.id,
+    )[0];
     const previousBill = previousContext.rows.find((row) => (
       !previousContext.usedIds.has(row.id)
       && row.period === period
@@ -408,8 +423,13 @@ async function applyParsedBillInTransaction(
     if (previousBill) previousContext.usedIds.add(previousBill.id);
     const existingBill = await tx.bill.findUnique({
       where: { cardId_period_currency: { cardId: billOwnerId, period, currency } },
-      select: { id: true, source: true },
+      select: { id: true, source: true, paidStatus: true },
     });
+    const inheritedPayment = previousBill ?? screenshotPayment;
+    const transferPayment = screenshotPayment && screenshotPayment.paidStatus !== 'unpaid'
+      && existingBill?.paidStatus === 'unpaid'
+      ? { paidStatus: screenshotPayment.paidStatus, paidAt: screenshotPayment.paidAt, paidAmount: screenshotPayment.paidAmount }
+      : {};
     const billRow = await tx.bill.upsert({
       where: { cardId_period_currency: { cardId: billOwnerId, period, currency } },
       create: {
@@ -425,9 +445,9 @@ async function applyParsedBillInTransaction(
         hasDetails: (bill.transactions?.length ?? 0) > 0,
         annualFeeAmount,
         source: 'email',
-        paidStatus: previousBill?.paidStatus ?? (autoPaid ? 'paid' : 'unpaid'),
-        paidAt: previousBill ? previousBill.paidAt : autoPaid ? dueDate : null,
-        paidAmount: previousBill ? previousBill.paidAmount : autoPaid ? bill.amount : null,
+        paidStatus: inheritedPayment?.paidStatus ?? (autoPaid ? 'paid' : 'unpaid'),
+        paidAt: inheritedPayment ? inheritedPayment.paidAt : autoPaid ? dueDate : null,
+        paidAmount: inheritedPayment ? inheritedPayment.paidAmount : autoPaid ? bill.amount : null,
       },
       update: {
         cycleStartDate: bill.cycleStartDate ? shanghaiMidnight(bill.cycleStartDate) : null,
@@ -442,14 +462,15 @@ async function applyParsedBillInTransaction(
         source: 'email',
         // 已存在的真实账单保留还款决定；仅自动零账单被真实账单接管时重新判定。
         ...(existingBill?.source === 'auto-none'
-          ? autoPaid ? { paidStatus: 'paid' as const, paidAt: dueDate, paidAmount: bill.amount }
+          ? inheritedPayment ? { paidStatus: inheritedPayment.paidStatus, paidAt: inheritedPayment.paidAt, paidAmount: inheritedPayment.paidAmount }
+            : autoPaid ? { paidStatus: 'paid' as const, paidAt: dueDate, paidAmount: bill.amount }
             : { paidStatus: 'unpaid' as const, paidAt: null, paidAmount: null }
-          : {}),
+          : transferPayment),
       },
     });
 
     // 阶段 3.5：priority 累加写入（按金额、不按笔数；同期幂等；手动钉住照样更新）
-    if (!existingBill && !previousBill) {
+    if ((!existingBill || existingBill.source === 'screenshot') && !previousBill) {
       const txns = bill.transactions ?? [];
       const deltas = new Map<number, number>();
       if (txns.length > 0) {
@@ -478,7 +499,6 @@ async function applyParsedBillInTransaction(
     }
 
     // 阶段 4：无卡号交易（分期/费用行）挂优先显示卡——写入 BillCard 关联
-    const cardIds = Array.from(new Set([...memberIds, preferredId]));
     if (cardIds.length > 1 || (await tx.billCard.count({ where: { billId: billRow.id } })) !== cardIds.length) {
       await tx.billCard.deleteMany({ where: { billId: billRow.id } });
       await tx.billCard.createMany({
@@ -554,14 +574,27 @@ async function applyParsedBillInTransaction(
         },
       };
     });
-    await tx.billTransaction.deleteMany({ where: { billId: billRow.id } });
+    const hasOfficialDetails = transactions.length > 0;
+    const preserveScreenshotDetails = !hasOfficialDetails && (Boolean(existingBill) || screenshotTwins.length > 0);
+    await tx.billTransaction.deleteMany({
+      where: { billId: billRow.id, ...(preserveScreenshotDetails ? { screenshot: false } : {}) },
+    });
     if (resolvedTransactions.length > 0) {
       await tx.billTransaction.createMany({ data: resolvedTransactions.map((transaction) => transaction.data) });
+    }
+    const screenshotRows = preserveScreenshotDetails
+      ? await preserveScreenshotTransactions(tx, billRow.id, screenshotTwins.map((row) => row.id))
+      : [];
+    if (screenshotTwins.length) {
+      await tx.bill.deleteMany({ where: { id: { in: screenshotTwins.map((row) => row.id) }, source: 'screenshot' } });
     }
     await updateAnnualFeeDatesFromTransactions(tx, bill.bankName, resolved, resolvedTransactions);
     await tx.bill.update({
       where: { id: billRow.id },
-      data: { hasDetails: transactions.length > 0 },
+      data: {
+        hasDetails: hasOfficialDetails || screenshotRows.length > 0,
+        ...(screenshotRows.length ? { annualFeeAmount: detectAnnualFeeAmount(screenshotRows) } : {}),
+      },
     });
 
     // 阶段 5：同银行、同出账日和还款规则出现真实卡后，隐藏未完善占位卡。
@@ -591,7 +624,43 @@ async function applyParsedBillInTransaction(
       }
     }
 
-    return { id: billRow.id, currency, preferredId, cardByTail };
+    const screenshotSequenceStart = screenshotRows.length
+      ? screenshotRows.reduce((next, row) => Math.max(next, row.sequence + 1), 0) : undefined;
+    return { id: billRow.id, currency, preferredId, cardByTail, screenshotSequenceStart };
+}
+
+/** 邮件只提供汇总时，保留已核对截图明细，合账不丢弃原来挂在成员卡上的截图。 */
+async function preserveScreenshotTransactions(tx: Prisma.TransactionClient, billId: number, twins: number[]) {
+  const rows = await tx.billTransaction.findMany({
+    where: { billId: { in: [billId, ...twins] }, screenshot: true },
+    select: { id: true, billId: true, sequence: true, cardId: true, transactionDate: true, dateText: true, description: true, amount: true },
+    orderBy: [{ billId: 'asc' }, { sequence: 'asc' }],
+  });
+  const result = rows.filter((row) => row.billId === billId).map((row) => ({ ...row, amount: Number(row.amount) }));
+  let sequence = (result[result.length - 1]?.sequence ?? -1) + 1;
+  const counts = new Map<string, number>();
+  const keyOf = (row: (typeof rows)[number]) =>
+    row.cardId + ':' + screenshotTransactionKey({
+      date: row.transactionDate ? ymd(row.transactionDate) : row.dateText ?? '',
+      description: row.description, amount: Number(row.amount),
+    });
+  for (const row of rows.filter((entry) => entry.billId === billId)) {
+    const key = keyOf(row);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  for (const twin of twins) {
+    const twinCounts = new Map<string, number>();
+    for (const row of rows.filter((entry) => entry.billId === twin)) {
+      const key = keyOf(row);
+      const count = (twinCounts.get(key) ?? 0) + 1;
+      twinCounts.set(key, count);
+      if (count <= (counts.get(key) ?? 0)) continue;
+      counts.set(key, count);
+      await tx.billTransaction.update({ where: { id: row.id }, data: { billId, sequence } });
+      result.push({ ...row, billId, sequence: sequence++, amount: Number(row.amount) });
+    }
+  }
+  return result;
 }
 
 /** 户级零账单落库输入。 */
@@ -799,7 +868,22 @@ async function reconcileCurrentCycleTransactions(
   if (rows.length === 0) return;
 
   const fallback = applied.find((row) => row.currency === 'CNY') ?? applied[0]!;
-  const nextSequence = new Map<number, number>(applied.map((row) => [row.id, 0]));
+  const nextSequence = new Map<number, number>(applied.map((row) => [row.id, row.screenshotSequenceStart ?? 0]));
+  const imageBillIds = applied.filter((row) => row.screenshotSequenceStart !== undefined).map((row) => row.id);
+  const provisionalRows = imageBillIds.length ? await tx.billTransaction.findMany({
+    where: { billId: { in: imageBillIds }, screenshot: true },
+    select: { id: true, billId: true, cardId: true, transactionDate: true, description: true, amount: true },
+  }) : [];
+  const provisionalIds = new Map<string, number[]>();
+  const rowKey = (billId: number | null, cardId: number | null, date: Date | null, description: string, amount: number) =>
+    `${billId}:${cardId}:${screenshotTransactionKey({ date: date ? ymd(date) : '', description, amount })}`;
+  for (const row of provisionalRows) {
+    const key = rowKey(row.billId, row.cardId, row.transactionDate, row.description, Number(row.amount));
+    const ids = provisionalIds.get(key) ?? [];
+    ids.push(row.id);
+    provisionalIds.set(key, ids);
+  }
+  const replacedScreenshots: number[] = [];
   for (const row of rows) {
     const target = applied.find((item) => item.currency === normalizeCurrency(row.currency)) ?? fallback;
     let cardId = row.cardId;
@@ -824,13 +908,20 @@ async function reconcileCurrentCycleTransactions(
     }
     const sequence = nextSequence.get(target.id) ?? 0;
     nextSequence.set(target.id, sequence + 1);
+    if (provisionalIds.size) {
+      const replaced = provisionalIds.get(rowKey(target.id, cardId, row.transactionDate, row.description, Number(row.amount)))?.shift();
+      if (replaced !== undefined) replacedScreenshots.push(replaced);
+    }
     await tx.billTransaction.update({
       where: { id: row.id },
       data: { billId: target.id, cardId, sequence },
     });
   }
+  if (replacedScreenshots.length) {
+    await tx.billTransaction.deleteMany({ where: { id: { in: replacedScreenshots } } });
+  }
   for (const target of applied) {
-    if ((nextSequence.get(target.id) ?? 0) === 0) continue;
+    if ((nextSequence.get(target.id) ?? 0) === (target.screenshotSequenceStart ?? 0)) continue;
     await tx.bill.update({ where: { id: target.id }, data: { hasDetails: true } });
   }
 }
@@ -936,7 +1027,7 @@ export function normalizeTransactionDate(raw: string | null | undefined, stateme
 }
 
 /** 事务写冲突（P2034）短暂退避重试：历史全量拉取与定时同步并发场景 */
-async function withTransactionRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+export async function withTransactionRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   for (let i = 0; ; i++) {
     try {
       return await fn();

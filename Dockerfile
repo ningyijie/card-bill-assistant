@@ -11,6 +11,7 @@ RUN npm run build
 FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production TZ=Asia/Shanghai WEB_DIST_DIR=/app/web/dist SKIN_STORAGE_DIR=/app/data/skins
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-data-eng
 
 # 先装依赖（利用层缓存）
 COPY server/package.json server/package-lock.json ./

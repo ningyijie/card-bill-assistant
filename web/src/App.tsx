@@ -11,7 +11,7 @@ import {
   type LazyExoticComponent,
   type ReactNode,
 } from 'react';
-import { Navigate, Route, Routes } from 'react-router';
+import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { Button, Result, Space, Spin } from 'antd';
 import { ReloadOutlined, SyncOutlined } from './skins/icons';
 import { api } from './api/client';
@@ -32,6 +32,15 @@ const loadTransactions: LazyPageLoader = () => import('./pages/Transactions');
 const loadEmail: LazyPageLoader = () => import('./pages/Email');
 const loadParserCenter: LazyPageLoader = () => import('./pages/ParserCenter');
 const loadSettings: LazyPageLoader = () => import('./pages/Settings');
+
+function CaptureSessionRedirect({ authenticated }: { authenticated: boolean }) {
+  const { pathname, search } = useLocation();
+  const id = new URLSearchParams(search).get('capture');
+  const capture = (pathname === '/login' || pathname === '/bills') && id
+    && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) ? id : null;
+  const destination = authenticated ? (capture ? '/bills' : '/') : '/login';
+  return <Navigate to={{ pathname: destination, search: capture ? `?capture=${capture}` : '' }} replace />;
+}
 
 // 路由切换发生在 React transition 内时，新页面可能先挂起再重试。
 // lazy 类型必须跨未提交的重试保持同一引用，否则每次重试都会创建新 Promise 并永久停留在旧页面。
@@ -183,7 +192,7 @@ export default function App() {
         <Routes>
           <Route
             path="/login"
-            element={authed ? <Navigate to="/" replace /> : <Login onSuccess={() => setAuthed(true)} />}
+            element={authed ? <CaptureSessionRedirect authenticated /> : <Login onSuccess={() => setAuthed(true)} />}
           />
           <Route
             path="/"
@@ -193,7 +202,7 @@ export default function App() {
                   <Layout onLogout={() => setAuthed(false)} />
                 </HistoryGateProvider>
               ) : (
-                <Navigate to="/login" replace />
+                <CaptureSessionRedirect authenticated={false} />
               )
             }
           >

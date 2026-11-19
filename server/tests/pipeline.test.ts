@@ -10,6 +10,7 @@ import {
 import type { ParsedBill, ParsedTransaction } from '../src/parsers/types';
 import { isAccountBillParser } from '../src/parsers/registry';
 import { fromYmd } from '../src/lib/dates';
+import { saveScreenshotBill } from '../src/modules/bills/screenshot-bills';
 
 // mock prisma：$transaction 直接把 tx 传给回调，不落真库
 const tx = vi.hoisted(() => ({
@@ -193,6 +194,67 @@ describe('applyParsedBill 明细元数据落库', () => {
     const arg = tx.bill.upsert.mock.calls[0]![0] as { create: Record<string, unknown>; update: Record<string, unknown> };
     expect(arg.create).toMatchObject({ mailLogId: 55, hasDetails: true, annualFeeAmount: 300, source: 'email' });
     expect(arg.update).toMatchObject({ mailLogId: 55, hasDetails: true, annualFeeAmount: 300, source: 'email' });
+  });
+
+  it('正式账单复用截图账单且替换明细，保留已有还款状态', async () => {
+    tx.bill.findUnique.mockResolvedValue({ id: 101, source: 'screenshot', paidStatus: 'partial' });
+    await applyParsedBill(55, 'ccb2026', makeBill([{ date: '08-01', description: '银行确认的消费', amount: 100 }]));
+    const { where, update } = tx.bill.upsert.mock.calls[0][0];
+    expect(where.cardId_period_currency).toEqual({ cardId: 7, period: '2026-08', currency: 'CNY' });
+    expect(update).toMatchObject({ source: 'email', amount: 100, mailLogId: 55 });
+    expect(update).not.toHaveProperty('paidStatus');
+    expect(tx.billTransaction.deleteMany).toHaveBeenCalledWith({ where: { billId: 101 } });
+    expect(tx.billTransaction.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ billId: 101, description: '银行确认的消费' })],
+    });
+  });
+
+  it('正式账单只有汇总时保留截图明细，邮件再次解析也不会清掉', async () => {
+    tx.bill.findUnique.mockResolvedValue({ id: 101, source: 'email', paidStatus: 'unpaid' });
+    tx.billTransaction.findMany.mockResolvedValue([{
+      id: 21, billId: 101, sequence: 0, cardId: 7, description: '消费', amount: 100,
+    }]);
+    await applyParsedBill(55, 'ccb2026', makeBill());
+    expect(tx.billTransaction.deleteMany).toHaveBeenCalledWith({ where: { billId: 101, screenshot: false } });
+    expect(tx.bill.update).toHaveBeenCalledWith({ where: { id: 101 }, data: { hasDetails: true, annualFeeAmount: null } });
+  });
+
+  it('正式多卡账单接管关联卡上的截图付款状态，并删除重复账单', async () => {
+    tx.card.findUnique.mockImplementation(async ({ where }: { where: { bankName_cardLast4?: { cardLast4: string } } }) => ({
+      id: where.bankName_cardLast4?.cardLast4 === '5678' ? 8 : 7,
+      holderName: '张三', statementDay: 5, dueRule: 'offset', dueOffsetDays: 18,
+      annualFeeDate: null, annualFeeDateManual: false,
+    }));
+    tx.bill.findMany.mockImplementation(async ({ where }: { where: { source?: string } }) =>
+      where.source === 'screenshot' ? [{ id: 102, source: 'screenshot', paidStatus: 'partial', paidAmount: 20, paidAt: fromYmd('2026-08-09') }] : [],
+    );
+    await applyParsedBill(55, 'ccb2026', { ...makeBill(), cardLast4s: ['1234', '5678'] });
+    expect(tx.bill.upsert.mock.calls[0][0].create).toMatchObject({ paidStatus: 'partial', paidAmount: 20 });
+    expect(tx.bill.deleteMany).toHaveBeenCalledWith({ where: { id: { in: [102] }, source: 'screenshot' } });
+    tx.bill.findMany.mockResolvedValue([]);
+  });
+
+  it('先有正式账单则跳过截图，重传截图只将新增明细追加到同一条账单', async () => {
+    const input = {
+      cardId: 7, statementDate: '2026-08-05', dueDate: '2026-08-23', currency: 'CNY', amount: 100,
+      minAmount: null, transactions: [
+        { date: '2026-08-01', description: '重复商户', amount: 40 },
+        { date: '2026-08-02', description: '新增商户', amount: 60 },
+      ],
+    };
+    tx.bill.findFirst.mockResolvedValueOnce({ id: 101 });
+    await expect(saveScreenshotBill(input)).resolves.toEqual({ id: 101, status: 'official' });
+    expect(tx.bill.upsert).not.toHaveBeenCalled();
+    tx.bill.findFirst.mockResolvedValueOnce(null);
+    tx.bill.findUnique.mockResolvedValue({ id: 101, source: 'screenshot' });
+    tx.billTransaction.findMany.mockResolvedValue([{
+      cardId: 7, transactionDate: fromYmd('2026-08-01'), sequence: 3, description: '重复商户', amount: 40,
+    }]);
+    await expect(saveScreenshotBill(input)).resolves.toEqual({ id: 101, status: 'merged', duplicateTransactions: 1 });
+    expect(tx.billTransaction.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ description: '新增商户', billId: 101, screenshot: true, sequence: 4 })],
+    });
+    expect(tx.bill.upsert.mock.calls[0][0].update).not.toHaveProperty('paidStatus');
   });
 
   it('按账单顺序持久化卡片归属、标准日期和原交易币种', async () => {
