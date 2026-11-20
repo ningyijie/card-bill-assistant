@@ -3,6 +3,7 @@ import { Alert, App, Button, Card, Collapse, Flex, Form, Input, InputNumber, Mod
 import { api } from '../api/client';
 import type { CardRow } from '../api/types';
 import { notifyDataChanged } from '../lib/dataChanged';
+import { cardDisplayLabel } from '../lib/cardDisplay';
 import './bill-image-capture.css';
 
 interface Transaction { date: string; description: string; amount: number }
@@ -151,7 +152,7 @@ function DraftReview({ id, draft, pages, cards }: {
           <div className="capture-draft-fields">
             <Form.Item name="cardId" label="卡片" rules={[{ required: true, message: '请选择卡片' }]}>
               <Select showSearch optionFilterProp="label" options={cards.map((card) => ({
-                value: card.id, label: `${card.bankName}（${card.displayLast4}）${card.nickname ? ' ' + card.nickname : ''}`,
+                value: card.id, label: cardDisplayLabel(card),
               }))} />
             </Form.Item>
             <Form.Item name="currency" label="币种" rules={[{ required: true }, { pattern: /^[a-z]{3}$/i, message: '填写三位币种代码' }]}>

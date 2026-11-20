@@ -1,4 +1,5 @@
 import { displayDate, displayPeriod } from '../lib/displayDate';
+import { withCardNickname } from '../lib/cardDisplay';
 import { useEffect, useRef, useState } from 'react';
 import { useUnsavedExit } from '../lib/draftGuard';
 import {
@@ -342,7 +343,7 @@ function MobileCardMarkPaidFlow({
         <span className="mobile-action-identity-icon"><WalletOutlined /></span>
         <div className="mobile-action-identity-copy">
           <span>{displayPeriod(target.period)}{currency.toUpperCase() !== 'CNY' && ` · ${currency}`} · 尾号 {target.cardLast4}</span>
-          <strong>{target.bankName}</strong>
+          <strong>{withCardNickname(target.bankName, target.nickname)}</strong>
         </div>
         <Tag color={hasBill ? currentStatus.color : undefined}>
           {hasBill ? currentStatus.label : '未取得账单'}

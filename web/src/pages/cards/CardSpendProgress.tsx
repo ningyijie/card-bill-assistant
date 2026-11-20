@@ -43,7 +43,7 @@ function AnnualFeeEligibility({ annualFee }: { annualFee: NonNullable<CardSpendP
   );
 }
 
-export function CardSpendProgress({ cardId, onClose }: { cardId: number; onClose: () => void }) {
+export function CardSpendProgress({ cardId, cardLabel, onClose }: { cardId: number; cardLabel?: string; onClose: () => void }) {
   const path = `/api/cards/${cardId}/spend-progress`;
   const [data, setData] = useState<CardSpendProgressResponse | null>(null);
   const [revision, setRevision] = useState(0);
@@ -80,6 +80,7 @@ export function CardSpendProgress({ cardId, onClose }: { cardId: number; onClose
   return (
     <Modal open title={data?.annualFee ? '年费达标进度' : '消费达标进度'} width={720} footer={null} onCancel={onClose}>
       <Flex vertical gap={12} style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+        {cardLabel && <Typography.Text strong>{cardLabel}</Typography.Text>}
         <Typography.Text type="secondary">
           小管家按已导入的账单明细估算。涉及计积分或指定支付渠道时，以银行确认金额为准。
         </Typography.Text>

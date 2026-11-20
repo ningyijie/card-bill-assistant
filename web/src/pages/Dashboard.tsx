@@ -13,7 +13,8 @@ import {
   RightOutlined,
 } from '../skins/icons';
 import { api, ApiError } from '../api/client';
-import type { AnnualFeeNotice, PagedTransactions, BillsTrend, DashboardSummary, TodoItem, UpcomingItem } from '../api/types';
+import type { AnnualFeeNotice, PagedTransactions, BillsTrend, CardDisplayIdentity, DashboardSummary, TodoItem, UpcomingItem } from '../api/types';
+import { cardTailsWithNicknames, nicknameForTail, withCardNickname } from '../lib/cardDisplay';
 import { overdueText } from '../lib/overdue';
 import { hasMetMinimumPayment } from '../lib/billPayment';
 import { useDataChanged } from '../lib/dataChanged';
@@ -59,12 +60,19 @@ function todoBandClass(t: TodoItem): string {
   return 'todo-item';
 }
 
-function todoTitle(item: TodoItem): string {
+function todoTitle(item: TodoItem, cards: CardDisplayIdentity[]): string {
   if (item.recordType === 'custom') return item.name ?? '';
   const tails = item.cardTails ?? [];
-  return tails.length > 1
-    ? `${item.bankName} ${tails.length} 张卡`
-    : `${item.bankName} ${todoTails(tails)}`;
+  if (tails.length > 1) {
+    const names = [...new Set(tails.map((tail) => nicknameForTail(cards, item.bankName ?? '', tail))
+      .filter((name): name is string => Boolean(name)))];
+    return withCardNickname(`${item.bankName} ${tails.length} 张卡`, names.join(' / '));
+  }
+  return withCardNickname(`${item.bankName} ${todoTails(tails)}`, cards.find((card) => card.id === item.cardId)?.nickname);
+}
+
+function upcomingTitle(item: UpcomingItem, cards: CardDisplayIdentity[]): string {
+  return withCardNickname(item.title, cards.find((card) => card.id === item.cardId)?.nickname);
 }
 
 function todoDueCopy(item: TodoItem): string {
@@ -93,12 +101,14 @@ function errMsg(e: unknown): string {
 
 function AnnualFeeNoticeAlert({
   notice,
+  cards,
   acknowledging,
   mobile = false,
   onView,
   onAcknowledge,
 }: {
   notice: AnnualFeeNotice;
+  cards: CardDisplayIdentity[];
   acknowledging: boolean;
   mobile?: boolean;
   onView: () => void;
@@ -121,7 +131,7 @@ function AnnualFeeNoticeAlert({
         <div className="annual-fee-notice-details">
           {notice.banks.map((bank) => {
             const meta = [
-              bank.cardTails.length > 0 ? `尾号 ${bank.cardTails.join('、')}` : null,
+              bank.cardTails.length > 0 ? `尾号 ${cardTailsWithNicknames(bank.cardTails, bank.bankName, cards).join('、')}` : null,
               bank.billCount > 1 || bank.cardTails.length === 0 ? `${bank.billCount} 张账单` : null,
             ].filter(Boolean).join(' · ');
             return (
@@ -157,9 +167,11 @@ function AnnualFeeNoticeAlert({
 
 function AnnualFeeNoticeList({
   notice,
+  cards,
   onSelect,
 }: {
   notice: AnnualFeeNotice;
+  cards: CardDisplayIdentity[];
   onSelect: (item: AnnualFeeNoticeItem) => void;
 }) {
   return (
@@ -175,7 +187,7 @@ function AnnualFeeNoticeList({
               <strong>{item.bankName}</strong>
               <span>
                 {displayPeriod(item.period)}期
-                {item.cardTails.length > 0 ? ` · 尾号 ${item.cardTails.join('、')}` : ''}
+                {item.cardTails.length > 0 ? ` · 尾号 ${cardTailsWithNicknames(item.cardTails, item.bankName, cards).join('、')}` : ''}
 
               </span>
             </span>
@@ -198,6 +210,7 @@ export default function Dashboard() {
   const { isMobile } = useResponsive();
   const { blockedReason, mayRunRestrictedAction } = useHistoryGate();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const cardDisplay = summary?.cardDisplay ?? [];
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [trend, setTrend] = useState<BillsTrend>({ months: 6, currency: 'CNY', currencies: ['CNY'], items: [] });
@@ -397,6 +410,7 @@ export default function Dashboard() {
       cardId: item.cardId,
       bankName: item.bankName,
       cardLast4: item.cardTails[0] ?? '',
+      nickname: cardDisplay.find((card) => card.id === item.cardId)?.nickname,
       period: item.period,
       currency: item.currency ?? 'CNY',
       billId: item.billId ?? undefined,
@@ -535,6 +549,7 @@ export default function Dashboard() {
               {summary?.annualFeeNotice && (
                 <AnnualFeeNoticeAlert
                   notice={summary.annualFeeNotice}
+                  cards={cardDisplay}
                   acknowledging={annualFeeAcknowledging || annualFeeDetailLoading}
                   mobile
                   onView={openAnnualFeeNotice}
@@ -580,14 +595,14 @@ export default function Dashboard() {
                         openTodoCard(item);
                       }}
                       tabIndex={item.recordType === 'card' ? 0 : undefined}
-                      aria-label={item.recordType === 'card' ? `查看 ${todoTitle(item)} 卡片详情` : undefined}
+                      aria-label={item.recordType === 'card' ? `查看 ${todoTitle(item, cardDisplay)} 卡片详情` : undefined}
                     >
                       <header className="mobile-todo-card-heading">
                         <div className="mobile-todo-card-title">
                           <span className={`mobile-todo-bank-mark${item.daysOverdue != null ? ' is-overdue' : ''}`} aria-hidden="true">
                             {item.recordType === 'card' ? (item.bankName?.slice(0, 1) ?? '卡') : '提'}
                           </span>
-                          <Typography.Text strong>{todoTitle(item)}</Typography.Text>
+                          <Typography.Text strong>{todoTitle(item, cardDisplay)}</Typography.Text>
                         </div>
                         {item.recordType === 'card' && <span className="mobile-todo-card-chevron" aria-hidden="true">›</span>}
                       </header>
@@ -675,7 +690,7 @@ export default function Dashboard() {
                       }}
                       role={item.cardId || item.actionable ? 'button' : undefined}
                       tabIndex={item.cardId || item.actionable ? 0 : undefined}
-                      aria-label={item.cardId || item.actionable ? item.title : undefined}
+                      aria-label={item.cardId || item.actionable ? upcomingTitle(item, cardDisplay) : undefined}
                     >
                       <div className="mobile-upcoming-row">
                         <div className="mobile-upcoming-date">
@@ -687,7 +702,7 @@ export default function Dashboard() {
                             {upcomingTag(item)}
                             {item.linkedCount != null && item.linkedCount > 1 && <Tag>{item.linkedCount} 张卡</Tag>}
                           </div>
-                          <Typography.Text strong>{item.title}</Typography.Text>
+                          <Typography.Text strong>{upcomingTitle(item, cardDisplay)}</Typography.Text>
                           {item.detail && <Typography.Text type="secondary">{item.detail}</Typography.Text>}
                           {feeTag(item.annualFeeAmount, item.currency)}
                         </div>
@@ -748,6 +763,7 @@ export default function Dashboard() {
           <MobileFlow title={`年费账单（${annualFeeSnapshot.items.length} 笔）`} onBack={closeAnnualFeePanel}>
             <AnnualFeeNoticeList
               notice={annualFeeSnapshot}
+              cards={cardDisplay}
               onSelect={(item) => void openAnnualFeeDetail(annualFeeSnapshot, item, false)}
             />
           </MobileFlow>
@@ -861,6 +877,7 @@ export default function Dashboard() {
       {summary?.annualFeeNotice && (
         <AnnualFeeNoticeAlert
           notice={summary.annualFeeNotice}
+          cards={cardDisplay}
           acknowledging={annualFeeAcknowledging || annualFeeDetailLoading}
           onView={openAnnualFeeNotice}
           onAcknowledge={() => void acknowledgeAnnualFeeNotice()}
@@ -933,7 +950,7 @@ export default function Dashboard() {
                       <div className="dashboard-list-main">
                         <div className="dashboard-list-title">
                           <span className="dashboard-todo-title">
-                            {item.recordType === 'card' && item.billId != null ? <Button type="link" className="dashboard-bill-link" onClick={() => openBill(item.billId!)}>{todoTitle(item)}</Button> : todoTitle(item)}
+                            {item.recordType === 'card' && item.billId != null ? <Button type="link" className="dashboard-bill-link" onClick={() => openBill(item.billId!)}>{todoTitle(item, cardDisplay)}</Button> : todoTitle(item, cardDisplay)}
                             {todoStatus(item)}
                           </span>
                         </div>
@@ -1030,9 +1047,9 @@ export default function Dashboard() {
                   {
                     title: '事项',
                     dataIndex: 'title',
-                    render: (v: string, r) => (
+                    render: (_: string, r) => (
                       <span>
-                        {v}
+                        {upcomingTitle(r, cardDisplay)}
                         {r.linkedCount != null && r.linkedCount > 1 && (
                           <Tag style={{ marginLeft: 6 }}>{r.linkedCount} 张卡</Tag>
                         )}
@@ -1113,7 +1130,7 @@ export default function Dashboard() {
       width={760}
       title={'年费账单（' + (annualFeeSnapshot?.items.length ?? 0) + ' 笔）'}
     >
-      {annualFeeSnapshot && <AnnualFeeNoticeList notice={annualFeeSnapshot} onSelect={item => void openAnnualFeeDetail(annualFeeSnapshot, item, false)} />}
+      {annualFeeSnapshot && <AnnualFeeNoticeList notice={annualFeeSnapshot} cards={cardDisplay} onSelect={item => void openAnnualFeeDetail(annualFeeSnapshot, item, false)} />}
     </Modal>
     </>
   );

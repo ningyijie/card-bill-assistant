@@ -10,6 +10,7 @@ import { formatMoney } from '../lib/money';
 import { billDueNotice, type BillDueNotice } from '../lib/billDue';
 import { hasMetMinimumPayment } from '../lib/billPayment';
 import { overdueText } from '../lib/overdue';
+import { cardTailsWithNicknames, withCardNickname } from '../lib/cardDisplay';
 import { paymentTarget, useBillNavigation } from '../lib/billNavigation';
 import { useResource } from '../lib/useResource';
 import { useViewState } from '../lib/viewState';
@@ -32,8 +33,12 @@ export function AgendaTotals({ summary, pending = true }: { summary: AgendaSumma
     ]} />;
 }
 
+function displayedTails(item: AgendaItem) {
+  return cardTailsWithNicknames(item.cardTails, item.bankName ?? '', item.cardIdentities ?? []);
+}
+
 function Identity({ item }: { item: AgendaItem }) {
-  return <div className="agenda-identity"><strong>{item.title}</strong><span>{item.cardTails.length > 0 ? '卡尾 ' + item.cardTails.join(' / ') : kinds[item.kind]}</span>{item.description && <span>{item.description}</span>}</div>;
+  return <div className="agenda-identity"><strong>{item.title}</strong><span>{item.cardTails.length > 0 ? '卡尾 ' + displayedTails(item).join(' / ') : kinds[item.kind]}</span>{item.description && <span>{item.description}</span>}</div>;
 }
 
 function BillAmount({ item }: { item: AgendaItem }) {
@@ -108,7 +113,7 @@ export function AgendaRows({ items, onChanged }: { items: AgendaItem[]; onChange
     if (hasBill(item)) openBill(item.bill!.id!);
     else if (item.bill?.recordType !== 'custom' && item.cardId != null) openBill({ cardId: item.cardId });
   };
-  const detailLabel = (item: AgendaItem) => `${item.title}（${item.cardTails.join(' / ')}）${displayPeriod(item.period)}，查看明细`;
+  const detailLabel = (item: AgendaItem) => `${item.title}（${displayedTails(item).join(' / ')}）${displayPeriod(item.period)}，查看明细`;
   const navigationCell = (item: AgendaItem) => ({ className: canOpen(item) ? 'agenda-navigable-cell' : undefined });
   const dueNotices = new Map<string, BillDueNotice | null>(items.map(item => [item.key, item.completed ? null : item.bill
     ? billDueNotice(item.bill) : item.daysOverdue != null ? { tone: 'overdue', label: overdueText(item.daysOverdue) } : null]));
@@ -116,7 +121,7 @@ export function AgendaRows({ items, onChanged }: { items: AgendaItem[]; onChange
   const openStatus = (item: AgendaItem) => void execute(item.key, async () => {
     const cards = await api.get<CardRow[]>('/api/cards'); const card = cards.find(c => c.id === item.bill!.cardId);
     if (!card) throw new Error('卡片不存在，请刷新');
-    setAbnormal({ cardId: card.id, bankName: card.bankName, cardLast4: card.displayLast4, status: card.status });
+    setAbnormal({ cardId: card.id, bankName: card.bankName, cardLast4: card.displayLast4, nickname: card.nickname, status: card.status });
   });
   const actions = (item: AgendaItem) => <Space className="agenda-record-actions" size={isMobile ? 8 : 4} wrap onClick={event => event.stopPropagation()}>
     {canOpen(item) && <Button className="agenda-details-action" size={isMobile ? 'middle' : 'small'} onClick={() => openDetails(item)}>明细</Button>}
@@ -152,7 +157,7 @@ export function AgendaRows({ items, onChanged }: { items: AgendaItem[]; onChange
     <MarkPaidModal target={paid} onClose={() => setPaid(null)} onDone={onChanged} />
     <MarkAbnormalModal target={abnormal} onClose={() => setAbnormal(null)} onDone={onChanged} />
     {deleting && <BusinessFlow title="删除账单" width={560} onClose={() => { if (!lock.current) setDeleting(null); }} footer={<Space><Button disabled={!!busy} onClick={() => setDeleting(null)}>取消</Button><Button danger type="primary" loading={!!busy} onClick={() => void execute('delete', async () => { await api.delete('/api/bills/' + deleting.id); setDeleting(null); message.success('账单已删除'); onChanged(); })}>删除账单</Button></Space>}>
-      <p>删除 {deleting.bankName}（{deleting.cardTails.join(' / ')}）{displayPeriod(deleting.period)}账单及其明细？此操作无法撤销。</p>
+      <p>删除 {withCardNickname(`${deleting.bankName}（${deleting.cardTails.join(' / ')}）`, deleting.cardNickname)}{displayPeriod(deleting.period)}账单及其明细？此操作无法撤销。</p>
     </BusinessFlow>}
   </>;
 }

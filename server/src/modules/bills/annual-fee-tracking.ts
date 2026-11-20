@@ -25,6 +25,7 @@ interface TrackingCard {
   bankName: string;
   cardLast4: string;
   displayLast4?: string | null;
+  nickname?: string | null;
   hidden?: boolean;
   annualFeePolicy?: unknown;
 }
@@ -186,6 +187,7 @@ export function buildAnnualFeeTracking(
       cardId, period, currency, billId,
       bankName: card.bankName,
       cardLast4: card.displayLast4 || card.cardLast4,
+      cardNickname: card.nickname ?? null,
       amount: charge.cents / 100,
       refundAmount: refundCents / 100,
       remainingAmount: (charge.cents - refundCents) / 100,
@@ -202,7 +204,7 @@ export async function loadAnnualFeeTracking(cards?: TrackingCard[], bills?: Trac
   const [cardRows, billRows, reviews] = await Promise.all([
     cards ?? prisma.card.findMany({
       where: { hidden: false },
-      select: { id: true, bankName: true, cardLast4: true, displayLast4: true, annualFeePolicy: true },
+      select: { id: true, bankName: true, cardLast4: true, displayLast4: true, nickname: true, annualFeePolicy: true },
     }),
     bills ?? prisma.bill.findMany({
       where: {

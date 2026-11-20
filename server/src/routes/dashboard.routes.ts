@@ -156,6 +156,9 @@ router.get(
 
     res.json({
       date: now.toISOString(),
+      cardDisplay: cards.filter((card) => !card.hidden).map(({ id, bankName, cardLast4, displayLast4, nickname }) => ({
+        id, bankName, cardLast4, displayLast4, nickname,
+      })),
       cards: {
         total: cards.length,
         active: activeCards.length,

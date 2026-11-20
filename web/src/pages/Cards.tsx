@@ -1,4 +1,5 @@
 import { displayDate } from '../lib/displayDate';
+import { cardDisplayLabel, withCardNickname } from '../lib/cardDisplay';
 import { useDataChanged } from '../lib/dataChanged';
 import { useDraftGuard } from '../lib/draftGuard';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -342,7 +343,7 @@ function CardForm({
     </div>
   );
 
-  const title = initial ? `编辑卡片 - ${initial.bankName}（${initial.displayLast4}）` : '新增卡片';
+  const title = initial ? `编辑卡片 - ${cardDisplayLabel(initial)}` : '新增卡片';
   const requestClose = () => {
     if (confirmLoading) return;
     if (restoreDraft?.dirty) {
@@ -429,7 +430,7 @@ function CardForm({
                 />
               </Form.Item>
               <Form.Item label="归属主卡">
-                <Input readOnly value={`尾号 ${initial.businessPrimaryCardLast4 ?? '----'}`} />
+                <Input readOnly value={withCardNickname(`尾号 ${initial.businessPrimaryCardLast4 ?? '----'}`, initial.businessPrimaryCardNickname)} />
               </Form.Item>
               <Form.Item
                 name="annualFeeDate"
@@ -638,8 +639,8 @@ function PinVerifyModal({
     <>
       <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
         {mode === 'reveal'
-          ? `验证 PIN 后在 ${card.bankName}（${card.displayLast4}）卡片上展开完整卡信息`
-          : `验证 PIN 后进入 ${card.bankName}（${card.displayLast4}）的卡信息管理`}
+          ? `验证 PIN 后在 ${cardDisplayLabel(card)}卡片上展开完整卡信息`
+          : `验证 PIN 后进入 ${cardDisplayLabel(card)}的卡信息管理`}
       </Typography.Paragraph>
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
         <Input.Password
@@ -878,7 +879,7 @@ function SecretModal({
       >
         <Card
           size="small"
-          title={`${card.bankName}（${card.displayLast4}）`}
+          title={cardDisplayLabel(card)}
           className="cards-mobile-flow-card"
         >
           {content}
@@ -889,7 +890,7 @@ function SecretModal({
 
   return (
     <Modal
-      title={`卡信息 - ${card.bankName}（${card.displayLast4}）`}
+      title={`卡信息 - ${cardDisplayLabel(card)}`}
       open
       onCancel={() => closeAndClear()}
       footer={null}
@@ -911,7 +912,7 @@ function nextFeeOfGroup(cards: CardRow[]): { label: string; lines: string[] } | 
     let next = src.year(today.year()).startOf('day');
     if (next.isBefore(today, 'day')) next = next.add(1, 'year');
     items.push({
-      line: `${c.bankName}（${c.displayLast4}）${src.format('M月D日')}`,
+      line: `${cardDisplayLabel(c)} ${src.format('M月D日')}`,
       next,
     });
   }
@@ -1020,7 +1021,7 @@ function BankCardItem({
   showBusinessRole?: boolean;
 }) {
   const groupSize = groupCards.length;
-  const groupTails = groupCards.map((c) => c.displayLast4);
+  const groupTails = groupCards.map((c) => withCardNickname(c.displayLast4, c.nickname));
   const groupLabel = `${groupSize} 张卡`;
   const stacked = groupSize > 1 && !plain;
   const feeAgg = nextFeeOfGroup(stacked ? groupCards : [card]);
@@ -1059,7 +1060,7 @@ function BankCardItem({
     <button
       type="button"
       className="bank-card-settings"
-      aria-label={`打开 ${card.bankName}（${card.displayLast4}）卡片设置`}
+      aria-label={`打开 ${cardDisplayLabel(card)}卡片设置`}
       onClick={(event) => {
         event.stopPropagation();
         if (isMobile) onMobileActions();
@@ -1107,8 +1108,8 @@ function BankCardItem({
       className="bank-card-eye"
       aria-label={
         expanded
-          ? `收起 ${card.bankName}（${card.displayLast4}）完整卡信息`
-          : `查看 ${card.bankName}（${card.displayLast4}）完整卡信息`
+          ? `收起 ${cardDisplayLabel(card)}完整卡信息`
+          : `查看 ${cardDisplayLabel(card)}完整卡信息`
       }
       onClick={(event) => {
         event.stopPropagation();
@@ -1144,7 +1145,7 @@ function BankCardItem({
         }}
         role={onCardClick ? 'button' : undefined}
         tabIndex={onCardClick ? 0 : undefined}
-        aria-label={onCardClick ? `查看 ${card.bankName}（${card.displayLast4}）卡片详情` : undefined}
+        aria-label={onCardClick ? `查看 ${cardDisplayLabel(card)}卡片详情` : undefined}
         style={onCardClick ? { cursor: 'pointer' } : undefined}
       >
         {showBusinessRole && <BusinessRoleRibbon role={card.businessRole} />}
@@ -1509,8 +1510,8 @@ function MobileCardConfirmSheet({
           <InlineConfirm
             title={
               isRemove
-                ? `删除 ${target.card.bankName}（${target.card.displayLast4}）？`
-                : `将（${target.card.displayLast4}）设为主卡？`
+                ? `删除 ${cardDisplayLabel(target.card)}？`
+                : `将（${withCardNickname(target.card.displayLast4, target.card.nickname)}）设为主卡？`
             }
             description={isRemove ? deleteCardDescription(target.card) : '设置后，此卡将在卡片列表中优先展示。'}
             confirmText={isRemove ? '删除卡片' : '设为主卡'}
@@ -1555,6 +1556,7 @@ export default function Cards() {
   const [groupDetailCardId, setGroupDetailCardId] = useState<number | null>(location.state?.sourceSnapshot?.groupDetailCardId ?? null);
   const [annualFeeTrackingCardId, setAnnualFeeTrackingCardId] = useState<number | null>(null);
   const [spendProgressCardId, setSpendProgressCardId] = useState<number | null>(null);
+  const spendProgressCard = rows.find((card) => card.id === spendProgressCardId);
   const [markTarget, setMarkTarget] = useState<MarkPaidTarget | null>(null);
   const [cardDetailReloadKey, setCardDetailReloadKey] = useState(0);
   /** 设为优先展示请求中的卡 ID */
@@ -1978,7 +1980,7 @@ export default function Cards() {
       const mutationEpoch = commitWrite();
       setRevealed(null);
       await refreshAfterMutation(mutationEpoch);
-      message.success(`已将（${card.displayLast4}）设为主卡，将在卡片列表中优先展示`);
+      message.success(`已将（${withCardNickname(card.displayLast4, card.nickname)}）设为主卡，将在卡片列表中优先展示`);
       setMobileConfirm((current) =>
         current?.action === 'primary' && current.card.id === card.id ? null : current,
       );
@@ -2030,8 +2032,8 @@ export default function Cards() {
     const instance = modal.confirm({
       title:
         action === 'remove'
-          ? `删除 ${card.bankName}（${card.displayLast4}）？`
-          : `将（${card.displayLast4}）设为主卡？`,
+          ? `删除 ${cardDisplayLabel(card)}？`
+          : `将（${withCardNickname(card.displayLast4, card.nickname)}）设为主卡？`,
       content:
         action === 'remove' ? deleteCardDescription(card) : '设置后，此卡将在卡片列表中优先展示。',
       okText: action === 'remove' ? '删除卡片' : '设为主卡',
@@ -2068,6 +2070,7 @@ export default function Cards() {
             cardId: card.id,
             bankName: card.bankName,
             cardLast4: card.displayLast4,
+            nickname: card.nickname,
             status: card.status,
             responsiveMode: mode,
             flowId: ++abnormalFlowSeq.current,
@@ -2125,7 +2128,8 @@ export default function Cards() {
         <AnnualFeeTracking cardId={annualFeeTrackingCardId} onClose={() => setAnnualFeeTrackingCardId(null)} />
       )}
       {spendProgressCardId !== null && (
-        <CardSpendProgress cardId={spendProgressCardId} onClose={() => setSpendProgressCardId(null)} />
+        <CardSpendProgress cardId={spendProgressCardId} cardLabel={spendProgressCard && cardDisplayLabel(spendProgressCard)}
+          onClose={() => setSpendProgressCardId(null)} />
       )}
       <MarkAbnormalModal
         key="cards-abnormal-flow"
@@ -2189,6 +2193,7 @@ export default function Cards() {
                   cardId: card.id,
                   bankName: card.bankName,
                   cardLast4: card.displayLast4,
+                  nickname: card.nickname,
                   status: card.status,
                   responsiveMode: mode,
                   flowId: ++abnormalFlowSeq.current,

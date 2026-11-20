@@ -130,6 +130,7 @@ export interface AnnualFeeTrackingRow {
   cardId: number;
   bankName: string;
   cardLast4: string;
+  cardNickname?: string | null;
   period: string;
   currency: string;
   amount: number;
@@ -233,6 +234,7 @@ export interface CardRow {
   businessRole: 'standalone' | 'primary' | 'secondary' | 'supplementary';
   businessPrimaryCardId: number | null;
   businessPrimaryCardLast4: string | null;
+  businessPrimaryCardNickname?: string | null;
   billingEditable: boolean;
   businessGroupMembers: Array<{
     id: number;
@@ -285,6 +287,7 @@ export interface BillRow {
   cardId: number | null;
   bankName: string | null;
   cardLast4: string | null;
+  cardNickname?: string | null;
   /** 合并账单全部卡尾（主卡在前）；普通账单/占位行为单尾号 */
   cardTails: string[];
   period: string;
@@ -489,6 +492,7 @@ export interface AnnualFeeNotice {
 export interface DashboardSummary {
   date: string;
   cards: { total: number; active: number; withSecret: number };
+  cardDisplay?: CardDisplayIdentity[];
   /** 全量未还清统计（含逾期上期、占位行、固定/动态账单）；period 仅作日历月份参考，不作为标题 */
   currentPeriod: {
     period: string;
@@ -608,6 +612,7 @@ export interface AgendaItem {
   cardId: number | null;
   cardIds: number[];
   cardTails: string[];
+  cardIdentities?: CardDisplayIdentity[];
   bankName: string | null;
   occurrenceId: number | null;
   action: 'pay' | 'complete' | 'none';
@@ -617,6 +622,14 @@ export interface AgendaItem {
   notices: Array<{ type: string; title: string; description: string; date: string }>;
   previewAmount: number | null;
   previewCurrency: string | null;
+}
+
+export interface CardDisplayIdentity {
+  id: number;
+  bankName: string;
+  cardLast4: string;
+  displayLast4?: string | null;
+  nickname?: string | null;
 }
 export interface AgendaSummary {
   missingBillCount?: number;

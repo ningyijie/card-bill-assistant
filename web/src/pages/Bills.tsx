@@ -11,6 +11,7 @@ import ReminderSettings from '../components/ReminderSettings';
 import BillStatistics from '../components/BillStatistics';
 import BillImageCapture from '../components/BillImageCapture';
 import { useResource } from '../lib/useResource';
+import { cardDisplayLabel } from '../lib/cardDisplay';
 import { useDataChanged } from '../lib/dataChanged';
 import { useResponsive } from '../responsive';
 import { useHistoryGate } from '../historyGate';
@@ -55,7 +56,7 @@ export default function Bills() {
     <Select variant={isMobile ? 'outlined' : 'borderless'} aria-label="银行" placeholder="全部银行" allowClear value={params.get('bank') ?? undefined}
       options={[...new Set(cards.data?.map(card => card.bankName))].map(value => ({ value, label: value }))} onChange={bank => update({ bank, cardId: undefined, cardIds: undefined })} />
     <Select variant={isMobile ? 'outlined' : 'borderless'} aria-label="卡片" placeholder="全部卡片" allowClear showSearch optionFilterProp="label" value={params.get('cardId') ? Number(params.get('cardId')) : undefined}
-      options={cards.data?.filter(card => !params.get('bank') || card.bankName === params.get('bank')).map(card => ({ value: card.id, label: card.bankName + '（' + card.displayLast4 + '）' }))} onChange={id => update({ cardId: id ? String(id) : undefined, cardIds: undefined })} />
+      options={cards.data?.filter(card => !params.get('bank') || card.bankName === params.get('bank')).map(card => ({ value: card.id, label: cardDisplayLabel(card) }))} onChange={id => update({ cardId: id ? String(id) : undefined, cardIds: undefined })} />
     <Select variant={isMobile ? 'outlined' : 'borderless'} aria-label="记录类型" placeholder="全部类型" allowClear value={params.get('kind') ?? undefined} onChange={kind => update({ kind })} options={[
       { value: 'credit_bill', label: '信用卡账单' }, { value: 'fixed_bill', label: '固定账单' }, { value: 'dynamic_bill', label: '动态账单' }, { value: 'general', label: '常规提醒' }, { value: 'statement', label: '出账提醒' }, { value: 'fee', label: '年费提醒' }, { value: 'repayment', label: '还款提醒' },
     ]} />

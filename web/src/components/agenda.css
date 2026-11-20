@@ -44,7 +44,7 @@
 .agenda-period .agenda-period-link { min-height: 36px; color: var(--primary); text-underline-offset: .2em; }
 .agenda-navigable-cell:hover .agenda-period-link, .agenda-period-link:focus-visible { text-decoration: underline; }
 .agenda-identity { display: grid; gap: 6px; }
-.agenda-identity > span { color: var(--text-secondary); font-size: 13px; }
+.agenda-identity > span { color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
 .agenda-amount { font-variant-numeric: lining-nums tabular-nums; white-space: nowrap; }
 .agenda-dates { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-secondary); font-size: 13px; }
 .agenda-overdue { color: var(--danger); }

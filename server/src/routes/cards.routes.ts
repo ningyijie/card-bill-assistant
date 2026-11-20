@@ -182,6 +182,9 @@ router.get(
           businessPrimaryCardLast4: card.businessPrimaryId
             ? (cardById.get(card.businessPrimaryId)?.displayLast4 ?? null)
             : null,
+          businessPrimaryCardNickname: card.businessPrimaryId
+            ? (cardById.get(card.businessPrimaryId)?.nickname ?? null)
+            : null,
           billingEditable: card.businessRole !== 'secondary' && card.businessRole !== 'supplementary',
           businessGroupMembers: businessMembers(card),
           source: card.source,
@@ -400,7 +403,7 @@ router.get(
       ? []
       : await prisma.card.findMany({
           where: { hidden: false, OR: [{ id: primaryId }, { businessPrimaryId: primaryId }] },
-          select: { id: true, displayLast4: true, businessRole: true },
+          select: { id: true, displayLast4: true, nickname: true, businessRole: true },
         });
     const primary = relatedCards.find((candidate) => candidate.id === primaryId) ?? null;
     res.json({
@@ -424,6 +427,7 @@ router.get(
       businessRole: card.businessRole,
       businessPrimaryCardId: card.businessPrimaryId,
       businessPrimaryCardLast4: card.businessPrimaryId ? primary?.displayLast4 ?? null : null,
+      businessPrimaryCardNickname: card.businessPrimaryId ? primary?.nickname ?? null : null,
       billingEditable: card.businessRole !== 'secondary' && card.businessRole !== 'supplementary',
       businessGroupMembers: relatedCards.map((candidate) => ({
         id: candidate.id,

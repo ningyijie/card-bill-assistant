@@ -163,12 +163,10 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
     return;
   }
 
-  // 保持原有服务器时区及触发时刻：每日整点提醒、每两小时的半点同步。
+  // 邮箱每天随整点提醒同步一次。年费检查保留原来的两小时频率。
   if (now.getMinutes() === 0 && now.getHours() === config.reminderHour) {
     await runDailyReminderJob();
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {
-    await syncAllEnabledAccounts();
-    if (isUpgradeBusinessBlocked()) return;
     const annualFeeEvents = await collectAnnualFeeReminderEvents();
     if (annualFeeEvents.length > 0) await sendReminderEvents(annualFeeEvents);
   }
@@ -181,7 +179,7 @@ export function startScheduler(): void {
     if (activeScheduledRuns.size > 0) return;
     trackScheduledRun(() => runSchedulerTick().catch(() => console.error('[cron] 调度检查失败，将在后续调度中重试')));
   });
-  console.log(`[cron] 调度器已启动：每日 ${config.reminderHour}:00 提醒推送，每 2 小时邮箱同步，升级等待每分钟检查`);
+  console.log(`[cron] 调度器已启动：每日 ${config.reminderHour}:00 邮箱同步和提醒推送，每 2 小时年费检查，升级等待每分钟检查`);
 }
 
 /** 先切换升级状态阻止新业务，再等待已进入的同步/推送收尾，保留定时器运行。 */

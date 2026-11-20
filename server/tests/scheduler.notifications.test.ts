@@ -60,7 +60,7 @@ describe('runDailyReminderJob 通用通知渠道', () => {
     expect(sendNotificationChannelBatch).toHaveBeenCalledTimes(2);
   });
 
-  it('定时同步后立即推送待申请年费，按固定账期日期去重', async () => {
+  it('每两小时仍检查待申请年费并按固定账期日期去重', async () => {
     const fireDate = new Date('2026-07-31T16:00:00.000Z');
     collectAnnualFeeReminderEvents.mockResolvedValue([{
       type: 'annual_fee_apply', refId: 42, fireDate, title: '年费减免待处理', body: '请申请减免',
@@ -69,7 +69,7 @@ describe('runDailyReminderJob 通用通知渠道', () => {
       { type: 'bark', name: 'Bark', enabled: true, config: {} },
     ]);
     await runSchedulerTick(new Date(2026, 7, 24, 10, 30));
-    expect(syncAllEnabledAccounts).toHaveBeenCalledOnce();
+    expect(syncAllEnabledAccounts).not.toHaveBeenCalled();
     expect(collectTodayEvents).not.toHaveBeenCalled();
     expect(prisma.notifyLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ type: 'annual_fee_apply', refId: 42, fireDate }),

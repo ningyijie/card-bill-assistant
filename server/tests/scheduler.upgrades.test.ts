@@ -77,7 +77,7 @@ describe('持续运行的统一调度器', () => {
     expect(isSchedulerStarted()).toBe(true);
   });
 
-  it.each(['ready', 'optional_wait', 'failed'] as const)('%s 保持每日提醒与两小时同步的原有触发时刻', async (state) => {
+  it.each(['ready', 'optional_wait', 'failed'] as const)('%s 只在每日提醒前自动同步一次邮箱', async (state) => {
     mode(state);
     startScheduler();
     await tick(7, 59);
@@ -87,11 +87,11 @@ describe('持续运行的统一调度器', () => {
     expect(collect).toHaveBeenCalledTimes(1);
     await tick(8, 1);
     await tick(8, 30);
-    expect(sync).toHaveBeenCalledTimes(2);
+    expect(sync).toHaveBeenCalledTimes(1);
     await tick(9, 30);
-    expect(sync).toHaveBeenCalledTimes(2);
+    expect(sync).toHaveBeenCalledTimes(1);
     await tick(10, 30);
-    expect(sync).toHaveBeenCalledTimes(3);
+    expect(sync).toHaveBeenCalledTimes(1);
     expect(collect).toHaveBeenCalledTimes(1);
     expect(remindUpgrade).not.toHaveBeenCalled();
   });
@@ -101,8 +101,10 @@ describe('持续运行的统一调度器', () => {
     startScheduler();
     await tick(8, 0);
     expect(collect).not.toHaveBeenCalled();
+    expect(sync).not.toHaveBeenCalled();
     await tick(13, 0);
     expect(collect).toHaveBeenCalledTimes(1);
+    expect(sync).toHaveBeenCalledTimes(1);
   });
 
   it('升级完成后使用同一定时器恢复日常任务，无须重新启动', async () => {
@@ -129,7 +131,7 @@ describe('持续运行的统一调度器', () => {
     await tick(8, 0);
     await tick(8, 30);
     expect(collect).toHaveBeenCalledTimes(1);
-    expect(sync).toHaveBeenCalledTimes(2);
+    expect(sync).toHaveBeenCalledTimes(1);
     expect(remindUpgrade).toHaveBeenCalledTimes(1);
     expect(cron.schedule).toHaveBeenCalledTimes(1);
     expect(cron.destroy).not.toHaveBeenCalled();

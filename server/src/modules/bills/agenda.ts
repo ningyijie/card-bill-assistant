@@ -32,6 +32,7 @@ export interface AgendaItem {
   cardId: number | null;
   cardIds: number[];
   cardTails: string[];
+  cardIdentities?: { id: number; bankName: string; cardLast4: string; displayLast4?: string | null; nickname?: string | null }[];
   bankName: string | null;
   occurrenceId: number | null;
   action: 'pay' | 'complete' | 'none';

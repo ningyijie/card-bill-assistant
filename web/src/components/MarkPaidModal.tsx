@@ -1,4 +1,5 @@
 import { displayPeriod } from '../lib/displayDate';
+import { cardDisplayLabel } from '../lib/cardDisplay';
 import { useEffect, useRef, useState } from 'react';
 import { useUnsavedExit } from '../lib/draftGuard';
 import { App, Button, Form, InputNumber, Modal, Radio, Typography } from 'antd';
@@ -20,6 +21,7 @@ export interface MarkPaidTarget {
   cardId: number;
   bankName: string;
   cardLast4: string;
+  nickname?: string | null;
   period: string;
   currency?: string;
   /** 已有账单时传入（场景 B） */
@@ -389,7 +391,7 @@ export default function MarkPaidModal({
 
   const title = isCustom
     ? `${target.paidStatus === 'paid' ? '恢复待还' : '还款'} - ${target.name ?? ''}`
-    : `标记还款 - ${target.bankName}（${target.cardLast4}）${displayPeriod(target.period)}`;
+    : `标记还款 - ${cardDisplayLabel(target)}${target.nickname ? ' ' : ''}${displayPeriod(target.period)}`;
 
   if (isMobile) {
     return <MobileMarkPaidFlow target={target} onClose={dismiss} onDone={onDone} />;

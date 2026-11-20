@@ -4,6 +4,7 @@ import { api } from '../../api/client';
 import type { AnnualFeeReviewStatus, AnnualFeeTrackingRow } from '../../api/types';
 import { notifyDataChanged } from '../../lib/dataChanged';
 import { formatMoney } from '../../lib/money';
+import { cardDisplayLabel } from '../../lib/cardDisplay';
 import { annualFeeSettlementLabels } from './CardAnnualFee';
 
 const reviewOptions: { value: AnnualFeeReviewStatus | 'auto'; label: string }[] = [
@@ -64,7 +65,7 @@ export function AnnualFeeTracking({ onClose, cardId }: { onClose: () => void; ca
             : (
               <Flex vertical gap={12} style={{ maxHeight: '65vh', overflowY: 'auto' }}>
                 {rows.map((row) => {
-                  const account = `${row.bankName}（${row.cardLast4}）`;
+                  const account = cardDisplayLabel({ ...row, nickname: row.cardNickname });
                   return (
                     <Card size="small" key={`${row.cardId}:${row.period}:${row.currency}`}>
                       <Flex vertical gap={6}>

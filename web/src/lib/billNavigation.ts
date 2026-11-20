@@ -24,7 +24,7 @@ export function paymentTarget(row: BillRow): MarkPaidTarget {
     currency: row.currency, amount: row.amount, paidStatus: row.paidStatus,
   };
   return {
-    cardId: row.cardId!, bankName: row.bankName!, cardLast4: row.cardLast4!,
+    cardId: row.cardId!, bankName: row.bankName!, cardLast4: row.cardLast4!, nickname: row.cardNickname,
     period: row.period, currency: row.currency,
     billId: row.missing ? undefined : row.id ?? undefined,
     amount: row.amount, minAmount: row.minAmount, paidStatus: row.paidStatus, paidAmount: row.paidAmount,

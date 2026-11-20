@@ -62,7 +62,16 @@ router.get('/', asyncHandler(async (req, res) => {
   const cardById = new Map(snapshot.allCards.map((card) => [card.id, card]));
   items = items.map((item) => {
     const card = item.cardId == null ? null : cardById.get(item.cardId);
+    const cardIdentities = item.cardIds.flatMap((id) => {
+      const related = cardById.get(id);
+      return related ? [{
+        id, bankName: related.bankName, cardLast4: related.cardLast4,
+        displayLast4: related.displayLast4, nickname: related.nickname,
+      }] : [];
+    });
     return { ...item, bankName: item.bankName ?? card?.bankName ?? null,
+      cardIdentities,
+      bill: item.bill && { ...item.bill, cardNickname: card?.nickname ?? null },
       cardTails: item.cardTails.length ? item.cardTails : card ? [card.displayLast4 || card.cardLast4] : [] };
   });
   const scopedIds = input.cardId != null ? [input.cardId] : input.cardIds;
@@ -70,7 +79,8 @@ router.get('/', asyncHandler(async (req, res) => {
     && (!scopedIds || item.cardIds.some((id) => scopedIds.includes(id)))
     && (!input.kind || item.kind === input.kind)
     && (!input.period || item.period === input.period)
-    && (!input.q || [item.title, item.description, ...item.cardTails].join(' ').toLocaleLowerCase().includes(input.q.toLocaleLowerCase())));
+    && (!input.q || [item.title, item.description, ...item.cardTails, ...(item.cardIdentities ?? []).map((card) => card.nickname)]
+      .join(' ').toLocaleLowerCase().includes(input.q.toLocaleLowerCase())));
   items = [...new Map(items.map((item) => [item.key, item])).values()];
   items.sort((a, b) => {
     if (input.view === 'open' && Boolean(a.daysOverdue) !== Boolean(b.daysOverdue)) return a.daysOverdue ? -1 : 1;

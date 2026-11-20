@@ -6,6 +6,7 @@ import { Popup } from 'antd-mobile';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useResource } from '../lib/useResource';
 import { useDataChanged } from '../lib/dataChanged';
+import { cardDisplayLabel, withCardNickname } from '../lib/cardDisplay';
 import { displayDate, displayPeriod } from '../lib/displayDate';
 import type { CardRow, PagedTransactions, TransactionRow } from '../api/types';
 import { Page } from '../components/Layout';
@@ -125,7 +126,11 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
     void resource.refresh();
     void cardsResource.refresh();
   });
-  const cards = cardsResource.data ?? [];
+  const cards = useMemo(() => cardsResource.data ?? [], [cardsResource.data]);
+  const cardsById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards]);
+  const transactionCardLabel = (row: TransactionRow) => cardDisplayLabel({
+    ...row, nickname: row.cardId == null ? null : cardsById.get(row.cardId)?.nickname,
+  });
   const billId = params.get('billId') ?? params.get('scopeBillId');
   const history = params.has('scopeBillId');
   const context = data.context;
@@ -135,13 +140,13 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
   const cardOptions = useMemo(
     () => cards
       .filter((card) => (!bank || card.bankName === bank) && (!billId || scopedIds?.includes(card.id)))
-      .map((card) => ({ value: card.id, label: `${card.bankName}（${card.displayLast4}）` })),
+      .map((card) => ({ value: card.id, label: cardDisplayLabel(card) })),
     [bank, cards, billId, scopedIds],
   );
   const draftCardOptions = useMemo(
     () => cards
       .filter((card) => (!draftBank || card.bankName === draftBank) && (!billId || scopedIds?.includes(card.id)))
-      .map((card) => ({ value: card.id, label: `${card.bankName}（${card.displayLast4}）` })),
+      .map((card) => ({ value: card.id, label: cardDisplayLabel(card) })),
     [cards, draftBank, billId, scopedIds],
   );
   const activeCard = useMemo(() => cards.find((card) => card.id === cardId), [cardId, cards]);
@@ -195,7 +200,7 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
           {bank && <Tag closable onClose={() => { setBank(undefined); resetPage(); }}>{bank}</Tag>}
           {activeCard && (
             <Tag closable onClose={() => { setCardId(undefined); resetPage(); }}>
-              卡尾 {activeCard.displayLast4}
+              卡尾 {withCardNickname(activeCard.displayLast4, activeCard.nickname)}
             </Tag>
           )}
           {(dates?.[0] || dates?.[1]) && (
@@ -278,16 +283,17 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
   return (
     <div className="transaction-content">
       {cardHistory && <section className="transaction-context" data-skin-slot="summary">
-        <div className="transaction-context-heading"><div><h3>{activeCard ? activeCard.bankName + ' · 历史明细' : '卡片历史明细'}</h3>{activeCard && <span>卡尾 {activeCard.displayLast4}</span>}</div></div>
+        <div className="transaction-context-heading"><div><h3>{activeCard ? activeCard.bankName + ' · 历史明细' : '卡片历史明细'}</h3>{activeCard && <span>卡尾 {withCardNickname(activeCard.displayLast4, activeCard.nickname)}</span>}</div></div>
         <div className="transaction-context-controls"><Button onClick={() => replaceParams({})}>查看全部明细</Button></div>
       </section>}
       {billId && <section className="transaction-context" data-skin-slot="summary">
         <div className="transaction-context-heading">
-          <div><h3>{context ? context.bankName + ' · ' + (history ? '历史明细' : displayPeriod(context.period)) : '账单明细'}</h3>{context && <span>卡尾 {context.cards.map(card => card.cardLast4).join(' / ')}</span>}</div>
+          <div><h3>{context ? context.bankName + ' · ' + (history ? '历史明细' : displayPeriod(context.period)) : '账单明细'}</h3>{context && <span>卡尾 {context.cards.map(card => withCardNickname(card.cardLast4, cardsById.get(card.id)?.nickname)).join(' / ')}</span>}</div>
           <div className="transaction-context-actions">
             {context && !history && <Button type={context.paidStatus === 'paid' ? 'default' : 'primary'} disabled={loading || !!error}
               onClick={() => setMarkTarget({ billId: context.billId, cardId: context.cardId, bankName: context.bankName,
-                cardLast4: context.cardLast4, period: context.period, currency: context.currency, amount: context.amount,
+                cardLast4: context.cardLast4, nickname: cardsById.get(context.cardId)?.nickname,
+                period: context.period, currency: context.currency, amount: context.amount,
                 minAmount: context.minAmount, paidStatus: context.paidStatus, paidAmount: context.paidAmount,
                 annualFeeAmount: context.annualFeeAmount })}>
               {context.paidStatus === 'paid' ? '调整还款' : '还款'}
@@ -308,7 +314,7 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
           {loading && data.items.length === 0 ? <Spin /> : data.items.length === 0 ? <Empty description={noRecords} /> : data.items.map((row) => (
             <Card key={row.id} size="small" className={'transaction-mobile-card' + (isAnnualFeeTransaction(row) ? ' annual-fee-row' : '')}>
               <div className="transaction-mobile-heading">
-                <strong>{row.bankName}（{row.cardLast4 ?? '----'}）</strong>
+                <strong>{transactionCardLabel(row)}</strong>
                 <Tag color={row.unbilled ? 'gold' : undefined}>{row.unbilled ? row.period : displayPeriod(row.period)}</Tag>
               </div>
               <Typography.Paragraph className="transaction-description">{transactionDescription(row)}</Typography.Paragraph>
@@ -342,7 +348,7 @@ export function TransactionsContent({ params, onParamsChange, sourceCardId, onPa
           pagination={{ current: data.page, pageSize: data.pageSize, total: data.total, showSizeChanger: false, showTotal: (total) => `共 ${total} 笔`, onChange: setPage }}
           columns={[
             { title: '交易日', width: 130, render: (_, row) => transactionDate(row) },
-            { title: '银行 / 卡尾', width: 170, render: (_, row) => `${row.bankName}（${row.cardLast4 ?? '----'}）` },
+            { title: '银行 / 卡尾', width: 170, render: (_, row) => transactionCardLabel(row) },
             { title: '方向', width: 70, align: 'center', render: (_, row) => transactionDirection(row.amount) },
             { title: '交易描述', dataIndex: 'description', render: (_, row) => transactionDescription(row) },
             {

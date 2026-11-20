@@ -21,9 +21,11 @@ import {
 } from 'antd';
 import { BankOutlined, EyeOutlined, PlayCircleOutlined, ReloadOutlined } from '../skins/icons';
 import { formatMoney } from '../lib/money';
+import { nicknameForTail, withCardNickname } from '../lib/cardDisplay';
+import { useResource } from '../lib/useResource';
 import { Virtuoso } from 'react-virtuoso';
 import { api, ApiError } from '../api/client';
-import type { DryRunResult, EmailAccount, MailBody, ParserInfo } from '../api/types';
+import type { CardDisplayIdentity, CardRow, DryRunResult, EmailAccount, MailBody, ParserInfo } from '../api/types';
 import { Page } from '../components/Layout';
 import InfoFields from '../components/InfoFields';
 import { useResponsive, useResetOnModeChange } from '../responsive';
@@ -31,9 +33,10 @@ import { useHistoryGate } from '../historyGate';
 import { MobileFlow, MobilePullToRefresh, useCoalescedRefresh } from '../components/MobilePrimitives';
 import './parser-center.css';
 
-function ParsedBillSummary({ bill }: { bill: NonNullable<DryRunResult['bills']>[number] }) {
+function ParsedBillSummary({ bill, cards }: { bill: NonNullable<DryRunResult['bills']>[number]; cards: CardDisplayIdentity[] }) {
+  const nickname = nicknameForTail(cards, bill.bankName, bill.cardLast4);
   return <article className="parser-bill-summary">
-    <header><strong>{bill.bankName} · {bill.cardLast4}</strong><span>{displayPeriod(bill.period)}</span></header>
+    <header><strong>{withCardNickname(`${bill.bankName} · ${bill.cardLast4}`, nickname)}</strong><span>{displayPeriod(bill.period)}</span></header>
     <InfoFields plain items={[
       { label: '账单金额', value: <span className="agenda-amount">{formatMoney(bill.amount, bill.currency)}</span> },
       { label: '还款日', value: displayDate(bill.dueDate) },
@@ -43,6 +46,7 @@ function ParsedBillSummary({ bill }: { bill: NonNullable<DryRunResult['bills']>[
 }
 
 export default function ParserCenter() {
+  const cards = useResource<CardRow[]>('/api/cards').data ?? [];
   const { message } = App.useApp();
   const { isMobile } = useResponsive();
   const historyGate = useHistoryGate();
@@ -476,7 +480,7 @@ export default function ParserCenter() {
                             {result.parserId ? <Tag color="blue">{result.parserId}</Tag> : <Tag>未匹配解析器</Tag>}
                           </div>
                           {result.bills && result.bills.length > 0 ? (
-                            <div className="parser-result-bills">{result.bills.map((bill, index) => <ParsedBillSummary key={index} bill={bill} />)}</div>
+                            <div className="parser-result-bills">{result.bills.map((bill, index) => <ParsedBillSummary key={index} bill={bill} cards={cards} />)}</div>
                           ) : (result.currentCycleTransactionCount ?? 0) > 0 ? (
                             <Typography.Text>未出账明细 {result.currentCycleTransactionCount} 笔</Typography.Text>
                           ) : (
@@ -533,7 +537,7 @@ export default function ParserCenter() {
                     width: 300,
                     render: (_, r) =>
                       r.bills && r.bills.length > 0 ? (
-                        <div className="parser-result-bills">{r.bills.map((bill, index) => <ParsedBillSummary key={index} bill={bill} />)}</div>
+                        <div className="parser-result-bills">{r.bills.map((bill, index) => <ParsedBillSummary key={index} bill={bill} cards={cards} />)}</div>
                       ) : (r.currentCycleTransactionCount ?? 0) > 0 ? (
                         <Typography.Text>未出账明细 {r.currentCycleTransactionCount} 笔</Typography.Text>
                       ) : (

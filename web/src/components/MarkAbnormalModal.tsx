@@ -9,6 +9,7 @@ import {
 import { App, Button, Modal, Radio, Tag, Typography } from 'antd';
 import { List as MobileList } from 'antd-mobile';
 import { api, ApiError } from '../api/client';
+import { cardDisplayLabel, withCardNickname } from '../lib/cardDisplay';
 import { useResponsive, useResetOnModeChange } from '../responsive';
 import { MobileFlow } from './MobilePrimitives';
 import './mobile-action-flows.css';
@@ -20,6 +21,7 @@ export interface MarkAbnormalTarget {
   cardId: number;
   bankName: string;
   cardLast4: string;
+  nickname?: string | null;
   status: CardStatus;
 }
 
@@ -155,7 +157,7 @@ export default function MarkAbnormalModal({
       const action = choice === 'active'
         ? currentStatus === 'closed' ? '撤销注销并恢复正常使用' : '恢复正常使用'
         : choice === 'frozen' ? '冻结' : '注销';
-      message.success(`已将该卡（${target.bankName} ${target.cardLast4}）${action}`);
+      message.success(`已将该卡（${withCardNickname(`${target.bankName} ${target.cardLast4}`, target.nickname)}）${action}`);
       onDone();
       onClose();
     } catch (err) {
@@ -193,7 +195,7 @@ export default function MarkAbnormalModal({
           <span className="mobile-action-identity-icon"><CreditCardOutlined /></span>
           <div className="mobile-action-identity-copy">
             <span>卡片尾号 {target.cardLast4}</span>
-            <strong>{target.bankName}</strong>
+            <strong>{withCardNickname(target.bankName, target.nickname)}</strong>
           </div>
           <Tag color={currentStatus === 'active' ? 'green' : currentStatus === 'frozen' ? 'orange' : undefined}>
             {STATUS_LABEL[currentStatus]}
@@ -335,7 +337,7 @@ export default function MarkAbnormalModal({
 
   return (
     <Modal
-      title={`标记异常 — ${target.bankName}（${target.cardLast4}）`}
+      title={`标记异常 — ${cardDisplayLabel(target)}`}
       open
       onCancel={dismiss}
       footer={(
