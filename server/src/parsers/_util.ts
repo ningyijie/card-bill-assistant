@@ -175,13 +175,25 @@ export function buildBill(params: {
   return bill;
 }
 
-/**
- * 实际年费支出：沿用既有金额口径，排除返还、冲销和减免类标记。
- */
+function isAnnualFeePointsOffset(description: string): boolean {
+  return /积分/.test(description) && /兑|换|抵扣|折抵/.test(description);
+}
+
+/** 实际年费支出，排除返还、冲销、减免和积分抵扣。 */
 export function isAnnualFeeCharge(transaction: Pick<ParsedTransaction, 'amount' | 'description'>): boolean {
   return transaction.amount > 0
     && /年费/.test(transaction.description)
-    && !/退|返|冲|免|减/.test(transaction.description);
+    && !/退|返|冲|免|减/.test(transaction.description)
+    && !isAnnualFeePointsOffset(transaction.description);
+}
+
+/** 账单中已入账的退款或抵扣，以负数表示。 */
+export function isAnnualFeeCredit(transaction: Pick<ParsedTransaction, 'amount' | 'description'>): boolean {
+  const { amount, description } = transaction;
+  return amount < 0 && /年费/.test(description) && (
+    /退还|返还|退回|退款|退费|冲销|冲正|冲回|减免|豁免|返年费|退年费|年费退|年费返|年费抵扣|抵扣年费/.test(description)
+    || isAnnualFeePointsOffset(description)
+  );
 }
 
 /** 实际年费金额合计；零元刷免只用于识别日期，不进入金额。 */

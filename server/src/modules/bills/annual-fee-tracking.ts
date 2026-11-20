@@ -1,6 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { daysBetween, ymd } from '../../lib/dates';
-import { isAnnualFeeCharge } from '../../parsers/_util';
+import { isAnnualFeeCharge, isAnnualFeeCredit } from '../../parsers/_util';
 
 export const annualFeeSettlementModes = ['automatic', 'automaticRefund', 'apply', 'none'] as const;
 export const annualFeeReviewStatuses = ['pending', 'requested', 'refunded', 'closed'] as const;
@@ -61,7 +61,7 @@ interface Fee extends ReviewKey {
 }
 
 const feeKey = ({ cardId, period, currency }: ReviewKey) => `${cardId}:${period}:${currency}`;
-const transactionKey = ({ cardId, currency, cents }: Fee) => `${cardId}:${currency}:${cents}`;
+const accountKey = ({ cardId, currency }: Fee) => `${cardId}:${currency}`;
 
 function settlementOf(policy: unknown): Settlement | null {
   if (!policy || typeof policy !== 'object' || !('settlement' in policy)) return null;
@@ -75,30 +75,38 @@ function defaultStatus(settlement: Settlement | null) {
   return 'review';
 }
 
-/** 同卡同币同额，冲退标记明确，且退款与扣费双向都只有一个候选。 */
+/** 同卡同币、优先等额。每笔入账需能唯一匹配，累计金额不能超过原扣费。 */
 function matchRefunds(charges: Fee[], refunds: Fee[]) {
-  const chargesByAmount = new Map<string, Fee[]>();
+  const chargesByAccount = new Map<string, Fee[]>();
   for (const charge of charges) {
-    const key = transactionKey(charge);
-    const group = chargesByAmount.get(key) ?? [];
+    const key = accountKey(charge);
+    const group = chargesByAccount.get(key) ?? [];
     group.push(charge);
-    chargesByAmount.set(key, group);
+    chargesByAccount.set(key, group);
   }
   const candidates = new Map<Fee, Array<{ refund: Fee; uniqueCharge: boolean }>>();
   for (const refund of refunds) {
-    const matches = (chargesByAmount.get(transactionKey(refund)) ?? []).filter((charge) => {
+    const eligible = (chargesByAccount.get(accountKey(refund)) ?? []).filter((charge) => {
       const elapsed = daysBetween(charge.date, refund.date);
-      return elapsed >= 0 && elapsed < 365;
+      return elapsed >= 0 && elapsed < 365 && refund.cents <= charge.cents;
     });
+    const exact = eligible.filter((charge) => refund.cents === charge.cents);
+    const matches = exact.length > 0 ? exact : eligible;
     for (const charge of matches) {
       const options = candidates.get(charge) ?? [];
       options.push({ refund, uniqueCharge: matches.length === 1 });
       candidates.set(charge, options);
     }
   }
-  return new Map([...candidates].flatMap(([charge, options]) =>
-    options.length === 1 && options[0].uniqueCharge ? [[charge, options[0].refund] as const] : [],
-  ));
+  const matches = new Map<Fee, Pick<Fee, 'cents' | 'date'>>();
+  for (const [charge, options] of candidates) {
+    if (options.some((option) => !option.uniqueCharge)) continue;
+    const cents = options.reduce((total, { refund }) => total + refund.cents, 0);
+    if (cents > charge.cents) continue;
+    const date = options.reduce((latest, { refund }) => refund.date > latest ? refund.date : latest, options[0].refund.date);
+    matches.set(charge, { cents, date });
+  }
+  return matches;
 }
 
 export function buildAnnualFeeTracking(
@@ -138,8 +146,7 @@ export function buildAnnualFeeTracking(
     for (const line of transactions) {
       const amount = Number(line.amount);
       const isCharge = isAnnualFeeCharge({ ...line, amount });
-      const isRefund = amount < 0 && /年费/.test(line.description)
-        && /退还|返还|退回|退款|退费|冲销|冲正|冲回|减免|豁免|返年费|退年费|年费退|年费返/.test(line.description);
+      const isRefund = isAnnualFeeCredit({ ...line, amount });
       if (!isCharge && !isRefund) continue;
       let cardId = line.cardId;
       if (cardId == null && line.cardLast4) {
@@ -170,15 +177,18 @@ export function buildAnnualFeeTracking(
     const settlement = settlementOf(card.annualFeePolicy);
     const manualStatus = annualFeeReviewStatuses.find((status) => status === reviewsByKey.get(feeKey(charge))) ?? null;
     const refund = matches.get(charge);
+    const refundCents = refund?.cents ?? 0;
     // 已申请之后，导入明确匹配到退款的账单即可自动结案。
     const status = manualStatus === 'pending' ? defaultStatus(settlement === 'none' ? null : settlement)
-      : manualStatus === 'refunded' || (refund && manualStatus !== 'closed') ? 'refunded'
+      : manualStatus === 'refunded' || (refundCents === charge.cents && refund && manualStatus !== 'closed') ? 'refunded'
       : manualStatus ?? defaultStatus(settlement);
     return {
       cardId, period, currency, billId,
       bankName: card.bankName,
       cardLast4: card.displayLast4 || card.cardLast4,
       amount: charge.cents / 100,
+      refundAmount: refundCents / 100,
+      remainingAmount: (charge.cents - refundCents) / 100,
       date: ymd(charge.date),
       settlement,
       manualStatus,

@@ -16,7 +16,7 @@ import {
 import { computeRuleCycle, openMissingCycle } from '../bills/ledger';
 import { loadAnnualFeeTracking, needsAnnualFeeAction } from '../bills/annual-fee-tracking';
 import { materializeCustomReminderOccurrences, occurrenceToView, type CustomOccurrenceLike } from './custom-occurrences';
-import { customTargetDatesBetween, type CustomScheduleLike } from './custom-schedule';
+import { customTargetDatesBetween } from './custom-schedule';
 
 /** 卡档案的最小结构（便于纯函数测试与复用） */
 export interface CardLike {
@@ -290,6 +290,7 @@ export interface CustomReminderLike {
   dayOfMonth: number | null;
   monthOfYear: number | null;
   specificDate: Date | null;
+  endDate?: Date | null;
   daysBefore: number[];
   fixedAmount: number | null;
   note: string | null;
@@ -476,7 +477,7 @@ export function collectUpcoming(
   );
   for (const r of customs) {
     if (!r.enabled) continue;
-    const targets = customTargetDatesBetween(r as CustomScheduleLike, today, horizon);
+    const targets = customTargetDatesBetween(r, today, horizon);
     for (const target of targets) {
       if (target >= today && target <= horizon) {
         const occurrence = occurrenceByTarget.get(`${r.id}:${ymd(target)}`);
@@ -591,11 +592,11 @@ export async function collectTodayEvents() {
 
   const occurrences = await prisma.customReminderOccurrence.findMany({
     where: { status: 'open', suspended: false, reminder: { enabled: true } },
-    include: { reminder: { select: { enabled: true } } },
+    include: { reminder: { select: { enabled: true, endDate: true } } },
   });
-  const customEvents = occurrences.flatMap((occurrence) =>
-    collectCustomEvents(occurrenceToView(occurrence), now, occurrence.reminder?.enabled ?? false),
-  );
+  const customEvents = occurrences
+    .filter((occurrence) => !occurrence.reminder?.endDate || occurrence.targetDate <= occurrence.reminder.endDate)
+    .flatMap((occurrence) => collectCustomEvents(occurrenceToView(occurrence), now, occurrence.reminder?.enabled ?? false));
 
   return { now, cardEvents, customEvents };
 }
@@ -608,7 +609,10 @@ export async function collectAnnualFeeReminderEvents(now: Date = today()) {
     // 历史补录仍可在页面处理，推送只覆盖近期扣费。
     if (age < 0 || age > 62) continue;
     const group = annualFeeActionsByBill.get(row.billId) ?? { period: row.period, actions: [] };
-    group.actions.push(`${row.bankName}（${row.cardLast4}）已扣年费 ${money(row.currency, row.amount)}，${row.status === 'apply' ? '请申请减免' : '请核对能否申请减免'}`);
+    const fee = row.refundAmount > 0
+      ? `已抵扣或退回年费 ${money(row.currency, row.refundAmount)}，剩余 ${money(row.currency, row.remainingAmount)}`
+      : `已扣年费 ${money(row.currency, row.amount)}`;
+    group.actions.push(`${row.bankName}（${row.cardLast4}）${fee}，${row.status === 'apply' ? '请申请减免' : '请核对能否申请减免'}`);
     annualFeeActionsByBill.set(row.billId, group);
   }
   return [...annualFeeActionsByBill].map(([refId, { period, actions }]) => ({

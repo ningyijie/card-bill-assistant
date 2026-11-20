@@ -42,6 +42,7 @@ interface CustomFormValues {
   dayOfMonth?: number;
   monthOfYear?: number;
   specificDate?: Dayjs;
+  endDate?: Dayjs;
   daysBefore: number[];
   fixedAmount?: number;
   note?: string;
@@ -61,14 +62,15 @@ function monthDayLabel(value: number | null | undefined): string {
 function scheduleLabel(reminder: CustomReminder): string {
   const interval = reminder.interval;
   if (reminder.type === 'once') return reminder.specificDate ?? '-';
-  if (reminder.type === 'daily') return interval === 1 ? '每天' : `每 ${interval} 天`;
+  const cutoff = reminder.endDate ? ` · 截至 ${reminder.endDate}` : '';
+  if (reminder.type === 'daily') return (interval === 1 ? '每天' : `每 ${interval} 天`) + cutoff;
   if (reminder.type === 'weekly') {
-    return `${interval === 1 ? '每周' : `每 ${interval} 周`} · ${WEEKDAY_LABELS[(reminder.dayOfWeek ?? 1) - 1]}`;
+    return `${interval === 1 ? '每周' : `每 ${interval} 周`} · ${WEEKDAY_LABELS[(reminder.dayOfWeek ?? 1) - 1]}${cutoff}`;
   }
   if (reminder.type === 'monthly') {
-    return `${interval === 1 ? '每月' : `每 ${interval} 月`} · ${monthDayLabel(reminder.dayOfMonth)}`;
+    return `${interval === 1 ? '每月' : `每 ${interval} 月`} · ${monthDayLabel(reminder.dayOfMonth)}${cutoff}`;
   }
-  return `${interval === 1 ? '每年' : `每 ${interval} 年`} · ${reminder.monthOfYear} 月 ${reminder.dayOfMonth} 日`;
+  return `${interval === 1 ? '每年' : `每 ${interval} 年`} · ${reminder.monthOfYear} 月 ${reminder.dayOfMonth} 日${cutoff}`;
 }
 
 function businessTypeTag(type: CustomReminderBusinessType) {
@@ -97,6 +99,7 @@ export function CustomForm({
   const dayOfMonth = Form.useWatch('dayOfMonth', form);
   const monthOfYear = Form.useWatch('monthOfYear', form);
   const specificDate = Form.useWatch('specificDate', form);
+  const endDate = Form.useWatch('endDate', form);
   const daysBefore = Form.useWatch('daysBefore', form);
   const fixedAmount = Form.useWatch('fixedAmount', form);
   const { isMobile } = useResponsive();
@@ -118,6 +121,7 @@ export function CustomForm({
         dayOfMonth: initial.dayOfMonth ?? undefined,
         monthOfYear: initial.monthOfYear ?? undefined,
         specificDate: initial.specificDate ? dayjs(initial.specificDate) : undefined,
+        endDate: initial.endDate ? dayjs(initial.endDate) : undefined,
         daysBefore: initial.daysBefore,
         fixedAmount: initial.fixedAmount ?? undefined,
         note: initial.note ?? undefined,
@@ -149,6 +153,7 @@ export function CustomForm({
     dayOfMonth: values.type === 'monthly' || values.type === 'yearly' ? values.dayOfMonth ?? null : null,
     monthOfYear: values.type === 'yearly' ? values.monthOfYear ?? null : null,
     specificDate: values.type === 'once' && values.specificDate ? values.specificDate.format('YYYY-MM-DD') : null,
+    endDate: values.type !== 'once' && values.endDate ? values.endDate.format('YYYY-MM-DD') : null,
     daysBefore: values.daysBefore ?? [],
     fixedAmount: values.businessType === 'fixed_bill' ? values.fixedAmount ?? null : null,
     note: values.note?.trim() || null,
@@ -156,6 +161,7 @@ export function CustomForm({
     ...(values.disableMode ? { disableMode: values.disableMode } : {}),
   });
 
+  const reminderId = initial?.id;
   useEffect(() => {
     const values = form.getFieldsValue();
     const complete = !!values.businessType && !!values.type
@@ -168,13 +174,17 @@ export function CustomForm({
       setPreviewDates([]);
       return;
     }
+    let active = true;
     const timer = window.setTimeout(() => {
-      void api.post<{ dates: string[] }>('/api/reminders/custom/preview', toInput(values))
-        .then((result) => setPreviewDates(result.dates))
-        .catch(() => setPreviewDates([]));
+      void api.post<{ dates: string[] }>('/api/reminders/custom/preview', { ...toInput(values), reminderId })
+        .then((result) => { if (active) setPreviewDates(result.dates); })
+        .catch(() => { if (active) setPreviewDates([]); });
     }, 180);
-    return () => window.clearTimeout(timer);
-  }, [businessType, dayOfMonth, dayOfWeek, daysBefore, fixedAmount, form, interval, monthOfYear, specificDate, type]);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [businessType, dayOfMonth, dayOfWeek, daysBefore, enabled, endDate, fixedAmount, form, interval, monthOfYear, reminderId, specificDate, type]);
 
   const requestCancel = () => {
     if (confirmLoading) return;
@@ -215,7 +225,7 @@ export function CustomForm({
         </div>
       </div>
     </div>
-  ) : null;
+  ) : endDate && type !== 'once' ? <Typography.Text type="secondary">截止日期前没有新的期次</Typography.Text> : null;
 
   const formContent = (
     <Form
@@ -309,6 +319,11 @@ export function CustomForm({
               </>
             )}
           </div>
+          {type !== 'once' && (
+            <Form.Item name="endDate" label="截止日期（可选）" extra="含截止当天。留空则持续重复。">
+              <DatePicker style={{ width: '100%' }} placeholder="选择截止日期" />
+            </Form.Item>
+          )}
           <Form.Item name="daysBefore" label="提前提醒">
             <Select
               mode="multiple"

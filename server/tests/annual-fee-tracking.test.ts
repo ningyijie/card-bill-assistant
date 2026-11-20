@@ -45,15 +45,43 @@ describe('年费减免记录', () => {
     expect(rows.filter(needsAnnualFeeAction)).toEqual([]);
   });
 
-  it('不同卡或币种、部分退款及模糊描述不自动标记到账', () => {
+  it('不同卡或币种及模糊描述不自动标记到账', () => {
     const unrelatedCredits = bill(2, '2026-07-24', [
       { cardId: 1, amount: -300, description: '年费退款' },
       { cardId: 2, amount: -300, description: '年费退款', currency: 'USD' },
-      { cardId: 2, amount: -100, description: '年费退款' },
+      { cardId: 2, amount: -100, description: '积分兑换' },
       { cardId: 2, amount: -300, description: '信用卡年费' },
     ]);
     const [row] = buildAnnualFeeTracking([primary, secondary], [charge, unrelatedCredits], [review]);
-    expect(row).toMatchObject({ status: 'requested', refundDate: null });
+    expect(row).toMatchObject({ status: 'requested', refundDate: null, refundAmount: 0, remainingAmount: 300 });
+  });
+
+  it('跨账期识别积分换年费，累计抵扣仍保留待处理，抵足后才结案', () => {
+    const original = bill(1, '2026-01-26', [{ cardId: 2, amount: 680, description: '年费' }]);
+    const next = bill(2, '2026-02-26', [{ cardId: 2, amount: -300, description: '积分换年费' }]);
+    next.transactions![0].transactionDate = fromYmd('2026-01-27');
+    const [partial] = buildAnnualFeeTracking([primary, secondary], [next, original], []);
+    expect(partial).toMatchObject({
+      amount: 680, refundAmount: 300, remainingAmount: 380, refundDate: '2026-01-27',
+      period: '2026-01', status: 'apply',
+    });
+    expect(needsAnnualFeeAction(partial)).toBe(true);
+
+    const last = bill(3, '2026-03-26', [{ cardId: 2, amount: -380, description: '年费返还' }]);
+    const [complete] = buildAnnualFeeTracking([primary, secondary], [last, next, original], []);
+    expect(complete).toMatchObject({ refundAmount: 680, remainingAmount: 0, status: 'refunded' });
+    expect(needsAnnualFeeAction(complete)).toBe(false);
+  });
+
+  it('部分抵扣有多个候选或累计超出原扣费时留待人工确认', () => {
+    const secondCharge = bill(2, '2026-07-24', [{ cardId: 2, amount: 680, description: '信用卡年费' }]);
+    const credit = bill(3, '2026-08-24', [{ cardId: 2, amount: -100, description: '积分兑换年费' }]);
+    const competing = buildAnnualFeeTracking([primary, secondary], [charge, secondCharge, credit], []);
+    expect(competing.map((row) => row.refundAmount)).toEqual([0, 0]);
+
+    const extra = bill(4, '2026-09-24', [{ cardId: 2, amount: -250, description: '年费减免' }]);
+    const [overTotal] = buildAnnualFeeTracking([primary, secondary], [charge, credit, extra], []);
+    expect(overTotal).toMatchObject({ status: 'apply', refundAmount: 0, remainingAmount: 300 });
   });
 
   it('同一笔退款有多笔同额扣费候选时留待人工确认', () => {

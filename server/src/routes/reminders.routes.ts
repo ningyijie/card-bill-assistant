@@ -20,6 +20,7 @@ const router = Router();
 router.use(requireAuth);
 
 const ymdSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD');
+const endDateSchema = z.iso.date({ error: '请选择有效的截止日期' }).nullable().optional();
 const customSchema = z
   .object({
     name: z.string().trim().min(1, '名称不能为空').max(64),
@@ -30,6 +31,7 @@ const customSchema = z
     dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
     monthOfYear: z.number().int().min(1).max(12).nullable().optional(),
     specificDate: ymdSchema.nullable().optional(),
+    endDate: endDateSchema,
     daysBefore: z.array(z.number().int().min(0).max(60)).max(20).default([3, 0]),
     fixedAmount: z.number().positive('固定金额必须大于 0').max(99_999_999).nullable().optional(),
     note: z.string().trim().max(255).nullable().optional(),
@@ -66,6 +68,9 @@ const customPreviewSchema = z
     dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
     monthOfYear: z.number().int().min(1).max(12).nullable().optional(),
     specificDate: ymdSchema.nullable().optional(),
+    endDate: endDateSchema,
+    reminderId: z.number().int().positive().optional(),
+    enabled: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.type === 'once' && !value.specificDate) {
@@ -95,7 +100,7 @@ function scheduleFieldsChanged(existing: {
   dayOfMonth: number | null;
   monthOfYear: number | null;
   specificDate: Date | null;
-}, input: CustomInput): boolean {
+}, input: z.infer<typeof customPreviewSchema>): boolean {
   return existing.type !== input.type
     || existing.interval !== input.interval
     || existing.dayOfWeek !== (input.type === 'weekly' ? input.dayOfWeek ?? null : null)
@@ -115,6 +120,7 @@ function customData(input: CustomInput, anchorDate?: Date) {
     dayOfMonth: input.type === 'monthly' || input.type === 'yearly' ? input.dayOfMonth ?? null : null,
     monthOfYear: input.type === 'yearly' ? input.monthOfYear ?? null : null,
     specificDate: input.type === 'once' && input.specificDate ? fromYmd(input.specificDate) : null,
+    endDate: input.type === 'once' ? null : input.endDate == null ? input.endDate : fromYmd(input.endDate),
     daysBefore: cleanDaysBefore(input.daysBefore),
     fixedAmount: input.businessType === 'fixed_bill' ? input.fixedAmount : null,
     note: input.note || null,
@@ -133,6 +139,7 @@ function customView(reminder: {
   dayOfMonth: number | null;
   monthOfYear: number | null;
   specificDate: Date | null;
+  endDate: Date | null;
   daysBefore: unknown;
   fixedAmount: unknown;
   note: string | null;
@@ -149,6 +156,7 @@ function customView(reminder: {
     dayOfMonth: reminder.dayOfMonth,
     monthOfYear: reminder.monthOfYear,
     specificDate: reminder.specificDate ? ymd(reminder.specificDate) : null,
+    endDate: reminder.endDate ? ymd(reminder.endDate) : null,
     daysBefore: (reminder.daysBefore as number[]) ?? [],
     fixedAmount: reminder.fixedAmount == null ? null : Number(reminder.fixedAmount),
     note: reminder.note,
@@ -159,7 +167,17 @@ function customView(reminder: {
 
 router.post('/custom/preview', asyncHandler(async (req, res) => {
   const input = customPreviewSchema.parse(req.body);
-  const dates = nextCustomTargetDates(scheduleFromInput({ ...input, anchorDate: today() }), today(), 3).map(ymd);
+  const now = today();
+  const existing = input.reminderId
+    ? await prisma.customReminder.findUnique({ where: { id: input.reminderId } })
+    : null;
+  const keepAnchor = existing && !scheduleFieldsChanged(existing, input) && (existing.enabled || input.enabled !== true);
+  const schedule = scheduleFromInput({
+    ...input,
+    anchorDate: keepAnchor ? existing.anchorDate : now,
+    endDate: input.endDate === undefined ? existing?.endDate : input.endDate,
+  });
+  const dates = nextCustomTargetDates(schedule, now, 3).map(ymd);
   res.json({ dates });
 }));
 
@@ -200,10 +218,16 @@ router.put('/custom/:id', asyncHandler(async (req, res) => {
     || Number(existing.fixedAmount ?? 0) !== Number(input.businessType === 'fixed_bill' ? input.fixedAmount ?? 0 : 0);
   const enabling = !existing.enabled && input.enabled;
   const disabling = existing.enabled && !input.enabled;
+  const data = customData(input, scheduleChanged || enabling ? now : undefined);
+  const endDateChanged = data.endDate !== undefined
+    && (data.endDate?.getTime() ?? null) !== (existing.endDate?.getTime() ?? null);
   await prisma.customReminder.update({
     where: { id },
     data: {
-      ...customData(input, scheduleChanged || enabling ? now : undefined),
+      ...data,
+      ...(endDateChanged && data.endDate ? {
+        occurrences: { deleteMany: { status: 'open', targetDate: { gt: data.endDate } } },
+      } : {}),
       disabledAt: input.enabled ? null : disabling ? now : existing.disabledAt ?? now,
       hideOpenWhenDisabled: input.enabled
         ? false
@@ -213,16 +237,12 @@ router.put('/custom/:id', asyncHandler(async (req, res) => {
     },
   });
 
-  if (enabling) {
-    if (scheduleChanged || daysChanged || billRuleChanged) {
-      await syncOpenCustomReminderOccurrences(id, now);
-    } else {
-      await prisma.customReminderOccurrence.updateMany({
-        where: { reminderId: id, status: 'open' },
-        data: { suspended: false, name: input.name, note: input.note || null },
-      });
-      await materializeCustomReminderOccurrences(now, [id]);
-    }
+  if (input.enabled && !scheduleChanged && !daysChanged && !billRuleChanged) {
+    await prisma.customReminderOccurrence.updateMany({
+      where: { reminderId: id, status: 'open' },
+      data: { suspended: false, name: input.name, note: input.note || null },
+    });
+    await materializeCustomReminderOccurrences(now, [id]);
   } else {
     await syncOpenCustomReminderOccurrences(id, now);
   }

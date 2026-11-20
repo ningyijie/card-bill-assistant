@@ -12,6 +12,10 @@ import { fromYmd, monthParts, today } from '../lib/dates';
 import { allCardGroups, recomputePrimary } from '../lib/card-groups';
 import { reconcileUnfinishedPlaceholderCards } from '../lib/card-placeholders';
 import { annualFeeReviewStatuses, annualFeeSettlementModes, loadAnnualFeeTracking } from '../modules/bills/annual-fee-tracking';
+import {
+  annualFeeWaivers, buildAnnualFeeSpendEligibility, buildSpendProgress, readSpendRules,
+  spendAmountSchema, spendDateSchema, spendPeriods, spendRuleIdSchema, spendRulesSchema,
+} from '../modules/bills/card-spend-tracking';
 
 const router = Router();
 router.use(requireAuth);
@@ -26,7 +30,7 @@ const annualFeePolicySchema = z.object({
   charge: z.enum(['annual', 'firstYearFree', 'free', 'other']).optional(),
   amount: z.number().nonnegative().max(999_999_999.99).optional(),
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
-  waiver: z.enum(['none', 'count', 'points', 'either', 'other']).optional(),
+  waiver: z.enum(annualFeeWaivers).optional(),
   settlement: z.enum(annualFeeSettlementModes).optional(),
   requiredCount: z.number().int().min(1).max(100_000).optional(),
   confirmedCount: z.number().int().min(0).max(100_000).optional(),
@@ -34,6 +38,12 @@ const annualFeePolicySchema = z.object({
   availablePoints: z.number().int().min(0).max(1_000_000_000).optional(),
   cycleEnd: z.iso.date().optional(),
   notes: z.string().trim().max(400).optional(),
+  spendRules: spendRulesSchema.optional(),
+  annualFeeSpendRuleId: spendRuleIdSchema.optional(),
+  pointsDeadline: spendDateSchema.optional(),
+}).refine((policy) => !policy.annualFeeSpendRuleId || policy.spendRules?.some((rule) => rule.id === policy.annualFeeSpendRuleId), {
+  path: ['annualFeeSpendRuleId'],
+  message: '请选择本卡已配置的消费跟踪规则',
 }).transform((policy) => Object.values(policy).some((value) => value !== undefined && value !== '') ? policy : null);
 
 const cardCreateSchema = z.object({
@@ -286,6 +296,92 @@ router.put(
     res.json({ ok: true });
   }),
 );
+
+async function spendCard(id: number) {
+  const card = await prisma.card.findUnique({
+    where: { id },
+    select: { id: true, hidden: true, annualFeePolicy: true, statementDay: true, businessPrimaryId: true,
+      businessPrimary: { select: { statementDay: true } } },
+  });
+  if (!card || card.hidden) throw new ApiError(404, '卡档案不存在');
+  return card;
+}
+
+async function spendStatementDates(cardId: number, primaryId: number | null) {
+  const ids = primaryId == null ? [cardId] : [cardId, primaryId];
+  const bills = await prisma.bill.findMany({
+    where: { source: 'email', OR: [{ cardId: { in: ids } }, { cards: { some: { cardId: { in: ids } } } }] },
+    select: { period: true, statementDate: true, cardId: true,
+      cards: { where: { cardId }, select: { cardId: true } } },
+    orderBy: { statementDate: 'asc' },
+  });
+  const byPeriod = new Map(bills.map((bill) => [bill.period, bill.statementDate]));
+  for (const bill of bills) {
+    if (bill.cardId === cardId || bill.cards.length > 0) byPeriod.set(bill.period, bill.statementDate);
+  }
+  return byPeriod;
+}
+
+router.get('/:id/spend-progress', asyncHandler(async (req, res) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id);
+  const card = await spendCard(id);
+  const rules = readSpendRules(card.annualFeePolicy);
+  const now = today();
+  if (rules.length === 0) {
+    res.json({ tracks: [], annualFee: buildAnnualFeeSpendEligibility(card.annualFeePolicy, [], now) });
+    return;
+  }
+  const [transactions, confirmations, statementDates] = await Promise.all([
+    prisma.billTransaction.findMany({
+      where: { cardId: id, currency: { in: [...new Set(rules.map((rule) => rule.currency))] },
+        OR: [{ billId: { not: null } }, { statementMailLog: { bills: { some: {} } } }] },
+      select: { amount: true, currency: true, description: true, transactionDate: true,
+        bill: { select: { period: true } },
+        statementMailLog: { select: { bills: { select: { period: true, currency: true } } } } },
+    }),
+    prisma.cardSpendConfirmation.findMany({ where: { cardId: id, ruleId: { in: rules.map((rule) => rule.id) } } }),
+    rules.some((rule) => rule.basis === 'statement_month') ? spendStatementDates(id, card.businessPrimaryId) : new Map<string, Date>(),
+  ]);
+  const tracks = buildSpendProgress(
+    rules,
+    transactions.map((row) => {
+      const sharedPeriods = new Set(row.statementMailLog?.bills.filter((bill) => bill.currency === row.currency).map((bill) => bill.period));
+      const sharedPeriod = sharedPeriods.size === 1 ? [...sharedPeriods][0] : null;
+      return { ...row, amount: Number(row.amount), statementPeriod: row.bill?.period ?? sharedPeriod };
+    }),
+    confirmations.map((row) => ({ ...row, amount: Number(row.amount) })),
+    now, card.businessPrimary?.statementDay ?? card.statementDay, statementDates,
+  );
+  res.json({ tracks, annualFee: buildAnnualFeeSpendEligibility(card.annualFeePolicy, tracks, now) });
+}));
+
+router.put('/:id/spend-progress/:ruleId', asyncHandler(async (req, res) => {
+  const { id, ruleId } = z.object({
+    id: z.coerce.number().int().positive(), ruleId: spendRuleIdSchema,
+  }).parse(req.params);
+  const { periodKey, amount } = z.object({
+    periodKey: z.string().min(1).max(50), amount: spendAmountSchema.nullable(),
+  }).strict().parse(req.body);
+  const card = await spendCard(id);
+  const rule = readSpendRules(card.annualFeePolicy).find((candidate) => candidate.id === ruleId);
+  if (!rule) throw new ApiError(404, '消费跟踪规则不存在');
+  const now = today();
+  const statementDates = rule.basis === 'statement_month' ? await spendStatementDates(id, card.businessPrimaryId) : new Map<string, Date>();
+  const period = spendPeriods(rule, now, card.businessPrimary?.statementDay ?? card.statementDay, statementDates)
+    .find((candidate) => candidate.key === periodKey);
+  if (!period || fromYmd(period.startsOn) > now) throw new ApiError(400, '该统计期尚不可填写');
+  const key = { cardId: id, ruleId, periodKey };
+  if (amount === null) {
+    await prisma.cardSpendConfirmation.deleteMany({ where: key });
+  } else {
+    await prisma.$executeRaw`
+      INSERT INTO \`CardSpendConfirmation\` (\`cardId\`, \`ruleId\`, \`periodKey\`, \`amount\`)
+      VALUES (${id}, ${ruleId}, ${periodKey}, ${amount})
+      ON DUPLICATE KEY UPDATE \`amount\` = ${amount}
+    `;
+  }
+  res.json({ ok: true });
+}));
 
 // 详情（含历史账单）
 router.get(

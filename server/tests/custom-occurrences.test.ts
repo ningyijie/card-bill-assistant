@@ -66,6 +66,22 @@ describe('自定义提醒期次物化', () => {
     expect(prisma.customReminderOccurrence.createMany.mock.calls[0][0].data[0].amount).toBeNull();
   });
 
+  it('提前提醒也不会生成截止日期之后的期次', async () => {
+    prisma.customReminder.findMany.mockResolvedValue([reminder({
+      type: 'daily',
+      interval: 2,
+      endDate: fromYmd('2026-08-03'),
+    })]);
+
+    await materializeCustomReminderOccurrences(fromYmd('2026-08-02'));
+
+    const [call] = prisma.customReminderOccurrence.createMany.mock.calls;
+    expect(call[0].data.map((item: { targetDate: Date }) => item.targetDate)).toEqual([
+      fromYmd('2026-08-01'),
+      fromYmd('2026-08-03'),
+    ]);
+  });
+
   it('同步只删除未处理期次，停用隐藏模式重建为隐藏', async () => {
     const disabled = reminder({
       enabled: false,

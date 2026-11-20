@@ -74,7 +74,19 @@ export function AnnualFeeTracking({ onClose, cardId }: { onClose: () => void; ca
                         </Flex>
                         <div>{row.date} 扣费 {formatMoney(row.amount, row.currency)}</div>
                         {row.settlement && <Typography.Text type="secondary">{annualFeeSettlementLabels[row.settlement]}</Typography.Text>}
-                        {row.refundDate && <Typography.Text type="secondary">账单匹配到 {row.refundDate} 退款</Typography.Text>}
+                        {row.refundAmount > 0 && (
+                          <Flex wrap gap={8} align="center">
+                            <Tag color="green">
+                              {row.remainingAmount > 0 ? '已部分抵扣或退款' : '账单已全额冲抵'}
+                            </Tag>
+                            <Typography.Text>
+                              已抵扣或退回 {formatMoney(row.refundAmount, row.currency)}
+                              {row.status !== 'refunded' && row.remainingAmount > 0
+                                && ` · 剩余年费 ${formatMoney(row.remainingAmount, row.currency)}`}
+                            </Typography.Text>
+                            {row.refundDate && <Typography.Text type="secondary">最近入账 {row.refundDate}</Typography.Text>}
+                          </Flex>
+                        )}
                         <Select<AnnualFeeReviewStatus | 'auto'>
                           aria-label={`更新 ${account} ${row.period} 年费减免状态`}
                           value={row.manualStatus ?? 'auto'}

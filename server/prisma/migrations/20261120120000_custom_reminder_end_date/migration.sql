@@ -1,0 +1,1 @@
+ALTER TABLE `CustomReminder` ADD COLUMN `endDate` DATETIME(3) NULL;

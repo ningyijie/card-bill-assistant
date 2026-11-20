@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import http from 'node:http';
 import express, { type Router } from 'express';
-import { fromYmd } from '../src/lib/dates';
+import { addDays, fromYmd, today, ymd } from '../src/lib/dates';
 
 const prisma = vi.hoisted(() => ({
   card: { findMany: vi.fn(), findUnique: vi.fn() },
@@ -277,6 +277,53 @@ describe('自定义提醒期次处理', () => {
     prisma.customReminderOccurrence.updateMany.mockResolvedValue({ count: 1 });
     prisma.customReminderOccurrence.createMany.mockResolvedValue({ count: 0 });
     prisma.customReminder.findMany.mockResolvedValue([]);
+  });
+
+  it('预览沿用现有周期的起点，并检查真实的截止日期', async () => {
+    const now = today();
+    const deadline = addDays(now, 1);
+    prisma.customReminder.findUnique.mockResolvedValue({
+      type: 'daily', interval: 2, anchorDate: addDays(now, -1),
+      dayOfWeek: null, dayOfMonth: null, monthOfYear: null, specificDate: null, enabled: true,
+    });
+
+    await withServer('/api/reminders', remindersRouter, async (url) => {
+      const preview = (endDate: string) => fetch(`${url}/api/reminders/custom/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reminderId: 12, type: 'daily', interval: 2, endDate }),
+      });
+      const response = await preview(ymd(deadline));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ dates: [ymd(deadline)] });
+      expect((await preview('2026-02-30')).status).toBe(400);
+    });
+  });
+
+  it('缩短截止日期保留周期起点和已有的完成记录', async () => {
+    const deadline = addDays(today(), 1);
+    const input = { name: '测试活动', businessType: 'general', type: 'daily', interval: 2, daysBefore: [0], enabled: true };
+    prisma.customReminder.findUnique.mockResolvedValue({
+      ...input, endDate: null, anchorDate: addDays(today(), -1),
+      dayOfWeek: null, dayOfMonth: null, monthOfYear: null, specificDate: null,
+    });
+
+    await withServer('/api/reminders', remindersRouter, async (url) => {
+      const response = await fetch(`${url}/api/reminders/custom/12`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...input, endDate: ymd(deadline) }),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    const [{ data }] = prisma.customReminder.update.mock.calls[0];
+    expect(data).not.toHaveProperty('anchorDate');
+    expect(data).toMatchObject({
+      endDate: deadline,
+      occurrences: { deleteMany: { status: 'open', targetDate: { gt: deadline } } },
+    });
+    expect(prisma.customReminderOccurrence.deleteMany).not.toHaveBeenCalled();
   });
 
   it('常规提醒只能标记完成', async () => {

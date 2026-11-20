@@ -50,6 +50,7 @@ import { Popup, SearchBar } from 'antd-mobile';
 import dayjs from 'dayjs';
 import { useLocation, useNavigate } from 'react-router';
 import { AnnualFeeTracking } from './cards/AnnualFeeTracking';
+import { CardSpendProgress } from './cards/CardSpendProgress';
 import { formatMoney } from '../lib/money';
 import {
   businessCoverOf,
@@ -1553,6 +1554,7 @@ export default function Cards() {
   const [groupModalKey, setGroupModalKey] = useState<string | null>(location.state?.sourceSnapshot?.groupModalKey ?? null);
   const [groupDetailCardId, setGroupDetailCardId] = useState<number | null>(location.state?.sourceSnapshot?.groupDetailCardId ?? null);
   const [annualFeeTrackingCardId, setAnnualFeeTrackingCardId] = useState<number | null>(null);
+  const [spendProgressCardId, setSpendProgressCardId] = useState<number | null>(null);
   const [markTarget, setMarkTarget] = useState<MarkPaidTarget | null>(null);
   const [cardDetailReloadKey, setCardDetailReloadKey] = useState(0);
   /** 设为优先展示请求中的卡 ID */
@@ -2085,7 +2087,8 @@ export default function Cards() {
       />
       {card.annualFeePolicy ? (
         <CardAnnualFeeSummary policy={card.annualFeePolicy} onEdit={() => openEditing(card)}
-          onTrack={() => setAnnualFeeTrackingCardId(card.id)} />
+          onTrack={() => setAnnualFeeTrackingCardId(card.id)}
+          onSpendProgress={() => setSpendProgressCardId(card.id)} />
       ) : (
         <Button type="link" size="small" onClick={() => setAnnualFeeTrackingCardId(card.id)}>年费减免记录</Button>
       )}
@@ -2120,6 +2123,9 @@ export default function Cards() {
       {content}
       {annualFeeTrackingCardId !== null && (
         <AnnualFeeTracking cardId={annualFeeTrackingCardId} onClose={() => setAnnualFeeTrackingCardId(null)} />
+      )}
+      {spendProgressCardId !== null && (
+        <CardSpendProgress cardId={spendProgressCardId} onClose={() => setSpendProgressCardId(null)} />
       )}
       <MarkAbnormalModal
         key="cards-abnormal-flow"

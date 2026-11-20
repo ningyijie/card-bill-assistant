@@ -133,6 +133,8 @@ export interface AnnualFeeTrackingRow {
   period: string;
   currency: string;
   amount: number;
+  refundAmount: number;
+  remainingAmount: number;
   date: string;
   settlement: AnnualFeeSettlement | null;
   manualStatus: AnnualFeeReviewStatus | null;
@@ -140,18 +142,66 @@ export interface AnnualFeeTrackingRow {
   refundDate: string | null;
 }
 
+export type CardSpendBasis = 'statement_month' | 'calendar_month' | 'date_range';
+
+export interface CardSpendRule {
+  id: string;
+  name: string;
+  basis: CardSpendBasis;
+  amount: number;
+  currency: string;
+  start: string;
+  end?: string;
+  consecutive?: number;
+}
+
+export interface CardSpendProgress {
+  rule: CardSpendRule;
+  bankStreak: number;
+  estimatedStreak: number;
+  periods: {
+    key: string;
+    label: string;
+    startsOn: string;
+    endsOn: string;
+    bankAmount: number | null;
+    estimatedAmount: number | null;
+    remaining: number | null;
+    canConfirm: boolean;
+  }[];
+}
+
+export interface CardSpendProgressResponse {
+  tracks: CardSpendProgress[];
+  annualFee: {
+    met: boolean;
+    spend: { name: string; confirmed: number; estimated: number; required: number; met: boolean } | null;
+    points: {
+      target: number | null;
+      available: number | null;
+      remaining: number | null;
+      deadline: string | null;
+      expired: boolean;
+      met: boolean;
+    } | null;
+  } | null;
+}
+
 export interface CardAnnualFeePolicy {
   charge?: 'annual' | 'firstYearFree' | 'free' | 'other';
   amount?: number;
   currency?: string;
-  waiver?: 'none' | 'count' | 'points' | 'either' | 'other';
+  waiver?: 'none' | 'count' | 'points' | 'either' | 'spend' | 'spend_or_points' | 'other';
   settlement?: AnnualFeeSettlement;
   requiredCount?: number;
   confirmedCount?: number;
   requiredPoints?: number;
   availablePoints?: number;
+  pointsDeadline?: string;
   cycleEnd?: string;
   notes?: string;
+  spendRules?: CardSpendRule[];
+  annualFeeSpendRuleId?: string;
 }
 
 export interface CardRow {
@@ -310,6 +360,7 @@ export interface CustomReminderInput {
   dayOfMonth: number | null;
   monthOfYear: number | null;
   specificDate: string | null;
+  endDate: string | null;
   daysBefore: number[];
   fixedAmount: number | null;
   note: string | null;

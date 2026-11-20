@@ -19,6 +19,7 @@ export interface CustomScheduleLike {
   dayOfMonth: number | null;
   monthOfYear: number | null;
   specificDate: Date | null;
+  endDate?: Date | null;
 }
 
 /** 按月专用：1-28=固定日，29=月末前2天，30=月末前1天，31=月末当天。 */
@@ -95,6 +96,10 @@ function nextTarget(schedule: CustomScheduleLike, current: Date): Date | null {
   return null;
 }
 
+function scheduleEnd(schedule: CustomScheduleLike): Date | null {
+  return schedule.type !== 'once' && schedule.endDate ? shanghaiMidnight(schedule.endDate) : null;
+}
+
 /** 返回范围内的目标日期；范围和数量双重限制用于防止错误周期生成无限数据。 */
 export function customTargetDatesBetween(
   schedule: CustomScheduleLike,
@@ -103,7 +108,10 @@ export function customTargetDatesBetween(
   limit = 50_000,
 ): Date[] {
   const start = shanghaiMidnight(startInclusive);
-  const end = shanghaiMidnight(endInclusive);
+  const rangeEnd = shanghaiMidnight(endInclusive);
+  const cutoff = scheduleEnd(schedule);
+  const end = cutoff && cutoff < rangeEnd ? cutoff : rangeEnd;
+  if (end < start) return [];
   const result: Date[] = [];
   let current = firstTarget(schedule);
   let guard = 0;
@@ -119,6 +127,8 @@ export function customTargetDatesBetween(
 export function nextCustomTargetDates(schedule: CustomScheduleLike, from: Date, count = 3): Date[] {
   if (count <= 0) return [];
   const start = shanghaiMidnight(from);
+  const end = scheduleEnd(schedule);
+  if (end && end < start) return [];
   let current = firstTarget(schedule);
   let guard = 0;
   while (current && current < start && guard < 50_000) {
@@ -126,7 +136,7 @@ export function nextCustomTargetDates(schedule: CustomScheduleLike, from: Date, 
     guard++;
   }
   const result: Date[] = [];
-  while (current && result.length < count && guard < 50_000) {
+  while (current && (!end || current <= end) && result.length < count && guard < 50_000) {
     result.push(current);
     current = nextTarget(schedule, current);
     guard++;
@@ -147,6 +157,7 @@ export function scheduleFromInput(input: {
   dayOfMonth?: number | null;
   monthOfYear?: number | null;
   specificDate?: Date | string | null;
+  endDate?: Date | string | null;
 }): CustomScheduleLike {
   const parse = (value: Date | string): Date =>
     typeof value === 'string' ? fromYmd(value.slice(0, 10)) : shanghaiMidnight(value);
@@ -158,5 +169,6 @@ export function scheduleFromInput(input: {
     dayOfMonth: input.dayOfMonth ?? null,
     monthOfYear: input.monthOfYear ?? null,
     specificDate: input.specificDate ? parse(input.specificDate) : null,
+    endDate: input.endDate ? parse(input.endDate) : null,
   };
 }

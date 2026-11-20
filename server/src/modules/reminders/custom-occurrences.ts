@@ -4,7 +4,6 @@ import {
   customTargetDatesBetween,
   occurrenceAvailableDate,
   type CustomReminderBusinessType,
-  type CustomScheduleLike,
 } from './custom-schedule';
 
 export interface CustomOccurrenceLike {
@@ -20,18 +19,6 @@ export interface CustomOccurrenceLike {
   status: string;
   completedAt: Date | null;
   suspended: boolean;
-}
-
-function scheduleOf(reminder: {
-  type: string;
-  interval: number;
-  anchorDate: Date;
-  dayOfWeek: number | null;
-  dayOfMonth: number | null;
-  monthOfYear: number | null;
-  specificDate: Date | null;
-}): CustomScheduleLike {
-  return reminder;
 }
 
 /**
@@ -55,7 +42,7 @@ export async function materializeCustomReminderOccurrences(
     const lead = daysBefore.length > 0 ? Math.max(...daysBefore) : 0;
     const cutoff = shanghaiMidnight(disabledCutoff ?? now);
     const horizon = addDays(cutoff, lead);
-    const targets = customTargetDatesBetween(scheduleOf(reminder), reminder.anchorDate, horizon);
+    const targets = customTargetDatesBetween(reminder, reminder.anchorDate, horizon);
     const data = targets
       .filter((targetDate) => occurrenceAvailableDate(targetDate, daysBefore) <= cutoff)
       .map((targetDate) => ({

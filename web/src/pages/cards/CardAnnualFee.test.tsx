@@ -55,4 +55,16 @@ describe('卡片年费进度', () => {
     expect(screen.getByText('银行已确认 0 笔')).toBeTruthy();
     expect(screen.getByText('当前可用 1,200 积分')).toBeTruthy();
   });
+
+  it('添加消费规则会打开独立的账单月设置', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<CardAnnualFeeFields value={null} onChange={onChange} />);
+    fireEvent.click(screen.getByRole('button', { name: '添加消费跟踪规则' }));
+    const draft = onChange.mock.calls[0][0];
+    expect(draft.spendRules[0]).toMatchObject({ basis: 'statement_month', consecutive: 1, currency: 'CNY' });
+    rerender(<CardAnnualFeeFields value={draft} onChange={onChange} />);
+    expect(screen.getByLabelText('首个账单月')).toBeTruthy();
+    expect(screen.getByLabelText('每期目标金额')).toBeTruthy();
+    expect(screen.getByLabelText('连续达标期数')).toBeTruthy();
+  });
 });

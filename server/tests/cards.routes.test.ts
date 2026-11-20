@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import http from 'node:http';
 import express from 'express';
-import { fromYmd } from '../src/lib/dates';
+import { fromYmd, periodOf, today } from '../src/lib/dates';
 import { Prisma } from '../src/generated/prisma/client';
 
 const prisma = vi.hoisted(() => ({
   card: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   bill: { findMany: vi.fn() },
+  billTransaction: { findMany: vi.fn() },
+  cardSpendConfirmation: { findMany: vi.fn(), deleteMany: vi.fn() },
+  $executeRaw: vi.fn(),
   $transaction: vi.fn(async (input: unknown) =>
     typeof input === 'function'
       ? (input as (tx: typeof prisma) => Promise<unknown>)(prisma)
@@ -209,7 +212,45 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
       expect((await save({ amount: -1 })).status).toBe(400);
       expect((await save({ cycleEnd: '2027-02-30' })).status).toBe(400);
       expect(prisma.card.update).toHaveBeenCalledTimes(policies.length + 1);
+      const rule = { id: 'aaaaaaaaaaaaaaaaaaaaaaaa', name: '返年费', basis: 'statement_month',
+        currency: 'CNY', start: '2026-04', amount: 5000, consecutive: 6 };
+      const alternatives = { waiver: 'spend_or_points', requiredPoints: 50000, availablePoints: 48000,
+        pointsDeadline: '2026-06-30', annualFeeSpendRuleId: rule.id, spendRules: [rule] };
+      expect((await save(alternatives)).status).toBe(200);
+      expect(prisma.card.update).toHaveBeenLastCalledWith({ where: { id: 2 }, data: { annualFeePolicy: alternatives } });
+      expect((await save({ ...alternatives, spendRules: [] })).status).toBe(400);
     });
+  });
+
+  it('消费跟踪进度只查对应卡，银行确认金额单独保存和清除', async () => {
+    const date = today();
+    const month = periodOf(date);
+    const rule = { id: 'aaaaaaaaaaaaaaaaaaaaaaaa', name: '活动', basis: 'calendar_month', start: month,
+      end: month, currency: 'CNY', amount: 5000 };
+    const periodKey = `calendar_month:${month}:CNY`;
+    prisma.card.findUnique.mockResolvedValue(existingCard({ annualFeePolicy: { spendRules: [rule] } }));
+    prisma.billTransaction.findMany.mockResolvedValue([
+      { amount: 4900, currency: 'CNY', description: '商户消费', transactionDate: date, bill: { period: month } },
+    ]);
+    prisma.cardSpendConfirmation.findMany.mockResolvedValue([]);
+    await withServer(async (url) => {
+      const path = `${url}/api/cards/2/spend-progress`;
+      const progress = await fetch(path);
+      expect(progress.status).toBe(200);
+      expect(await progress.json()).toMatchObject({ tracks: [{ periods: [{ key: periodKey, remaining: 100 }] }], annualFee: null });
+      const confirm = (amount: number | null, key = periodKey) => fetch(`${path}/${rule.id}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ periodKey: key, amount }),
+      });
+      expect((await confirm(5000, `calendar_month:${month}:USD`)).status).toBe(400);
+      expect((await confirm(5000)).status).toBe(200);
+      expect((await confirm(null)).status).toBe(200);
+    });
+    expect(prisma.billTransaction.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ cardId: 2, currency: { in: ['CNY'] } }),
+    }));
+    expect(prisma.$executeRaw).toHaveBeenCalledWith(expect.any(Array), 2, rule.id, periodKey, 5000, 5000);
+    expect(prisma.cardSpendConfirmation.deleteMany).toHaveBeenCalledWith({ where: { cardId: 2, ruleId: rule.id, periodKey } });
   });
 
   it('改状态为冻结触发 recomputePrimary（主卡让位）', async () => {

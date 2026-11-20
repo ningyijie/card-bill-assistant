@@ -106,9 +106,20 @@ model Card {
   businessChildren   Card[]    @relation("CardBusinessHierarchy")
   aliases            CardAlias[]
   annualFeeReviews   AnnualFeeReview[]
+  spendConfirmations CardSpendConfirmation[]
 
   @@unique([bankName, cardLast4])
   @@index([businessPrimaryId])
+}
+
+model CardSpendConfirmation {
+  cardId    Int
+  card      Card    @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  ruleId    String  @db.VarChar(32)
+  periodKey String  @db.VarChar(50)
+  amount    Decimal @db.Decimal(12, 2)
+
+  @@id([cardId, ruleId, periodKey])
 }
 
 model AnnualFeeReview {
@@ -303,6 +314,8 @@ model CustomReminder {
   /** 1-12，仅按年使用 */
   monthOfYear          Int?
   specificDate         DateTime?
+  /** 周期提醒的最后有效日期（含当天） */
+  endDate              DateTime?
   daysBefore           Json
   fixedAmount          Decimal?  @db.Decimal(12, 2)
   note                 String?

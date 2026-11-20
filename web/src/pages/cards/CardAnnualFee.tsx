@@ -2,6 +2,7 @@ import { Button, Col, DatePicker, Form, Input, InputNumber, Row, Select, Typogra
 import dayjs from 'dayjs';
 import type { AnnualFeeSettlement, CardAnnualFeePolicy } from '../../api/types';
 import { formatMoney } from '../../lib/money';
+import { CardSpendRules, spendBasisLabels } from './CardSpendRules';
 
 const charges = {
   annual: '按年收取',
@@ -15,6 +16,8 @@ const waivers = {
   count: '刷满次数免年费',
   points: '积分抵扣',
   either: '刷卡次数或积分（二选一）',
+  spend: '消费金额达标',
+  spend_or_points: '积分兑换或消费金额达标（任选其一）',
   other: '其他减免条件',
 } as const;
 
@@ -27,6 +30,13 @@ export const annualFeeSettlementLabels: Record<AnnualFeeSettlement, string> = {
 
 export async function validateAnnualFeePolicy(_: unknown, policy?: CardAnnualFeePolicy | null) {
   if (policy?.currency && !/^[A-Z]{3}$/.test(policy.currency)) throw new Error('币种应为 3 位字母，如 CNY');
+  for (const rule of policy?.spendRules ?? []) {
+    if (!rule.name.trim() || !rule.start || rule.amount < 0.01 || !/^[A-Z]{3}$/.test(rule.currency)
+      || (rule.basis === 'date_range' && !rule.end)) {
+      throw new Error('请填写消费跟踪规则的名称、金额、币种和统计时间');
+    }
+    if (rule.end && rule.end < rule.start) throw new Error('消费跟踪的截止时间不能早于开始时间');
+  }
 }
 
 export function CardAnnualFeeFields({ value, onChange }: {
@@ -34,6 +44,7 @@ export function CardAnnualFeeFields({ value, onChange }: {
   onChange?: (value: CardAnnualFeePolicy | null) => void;
 }) {
   const policy: CardAnnualFeePolicy = value ?? {};
+  const hasSpendWaiver = policy.waiver === 'spend' || policy.waiver === 'spend_or_points';
   const update = (fields: Partial<CardAnnualFeePolicy>) => {
     const next = { ...policy, ...fields };
     onChange?.(Object.values(next).some((entry) => entry !== undefined && entry !== '') ? next : null);
@@ -112,6 +123,15 @@ export function CardAnnualFeeFields({ value, onChange }: {
             onChange={(availablePoints) => update({ availablePoints: availablePoints ?? undefined })} />
         </Form.Item>
       </Col>
+      {policy.waiver === 'spend_or_points' && (
+        <Col xs={24} sm={12}>
+          <Form.Item label="积分兑换截止日（可选）" htmlFor="annual-fee-points-deadline">
+            <DatePicker id="annual-fee-points-deadline" value={policy.pointsDeadline ? dayjs(policy.pointsDeadline) : null}
+              style={{ width: '100%' }} format="YYYY-MM-DD"
+              onChange={(date) => update({ pointsDeadline: date?.format('YYYY-MM-DD') })} />
+          </Form.Item>
+        </Col>
+      )}
       <Col span={24}>
         <Form.Item label="规则备注" htmlFor="annual-fee-notes">
           <Input.TextArea id="annual-fee-notes" value={policy.notes ?? ''} maxLength={400} autoSize={{ minRows: 1, maxRows: 3 }}
@@ -119,16 +139,40 @@ export function CardAnnualFeeFields({ value, onChange }: {
             onChange={(event) => update({ notes: event.target.value || undefined })} />
         </Form.Item>
       </Col>
+      <Col span={24}>
+        <CardSpendRules rules={policy.spendRules ?? []} currency={policy.currency}
+          onChange={(spendRules) => update({
+            spendRules: spendRules.length > 0 ? spendRules : undefined,
+            annualFeeSpendRuleId: spendRules.some((rule) => rule.id === policy.annualFeeSpendRuleId)
+              ? policy.annualFeeSpendRuleId : undefined,
+          })} />
+      </Col>
+      {hasSpendWaiver && (
+        <Col span={24} style={{ marginTop: 12 }}>
+          <Form.Item label="用于减免年费的消费规则" htmlFor="annual-fee-spend-rule">
+            <Select id="annual-fee-spend-rule" value={policy.annualFeeSpendRuleId} allowClear
+              placeholder="从本卡的消费跟踪规则中选择"
+              options={(policy.spendRules ?? []).map((rule) => ({
+                value: rule.id, label: `${rule.name.trim() || '未命名规则'} · ${spendBasisLabels[rule.basis]}`,
+              }))}
+              onChange={(annualFeeSpendRuleId) => update({ annualFeeSpendRuleId })} />
+          </Form.Item>
+        </Col>
+      )}
     </Row>
   );
 }
 
-export function CardAnnualFeeSummary({ policy, onEdit, onTrack }: {
+export function CardAnnualFeeSummary({ policy, onEdit, onTrack, onSpendProgress }: {
   policy: CardAnnualFeePolicy;
   onEdit: () => void;
   onTrack?: () => void;
+  onSpendProgress?: () => void;
 }) {
   const expired = policy.cycleEnd && policy.cycleEnd < dayjs().format('YYYY-MM-DD');
+  const hasSpendWaiver = policy.waiver === 'spend' || policy.waiver === 'spend_or_points';
+  const pointsExpired = policy.waiver === 'spend_or_points' && policy.pointsDeadline
+    && policy.pointsDeadline < dayjs().format('YYYY-MM-DD');
   const { requiredCount: count, confirmedCount, requiredPoints: points, availablePoints, amount, currency } = policy;
   const remainingCount = count != null && confirmedCount != null ? Math.max(0, count - confirmedCount) : null;
   const remainingPoints = points != null && availablePoints != null ? Math.max(0, points - availablePoints) : null;
@@ -158,6 +202,9 @@ export function CardAnnualFeeSummary({ policy, onEdit, onTrack }: {
         <div>
           <Button type="link" size="small" onClick={onEdit}>编辑年费</Button>
           {onTrack && <Button type="link" size="small" onClick={onTrack}>减免记录</Button>}
+          {onSpendProgress && (hasSpendWaiver || Boolean(policy.spendRules?.length)) && (
+            <Button type="link" size="small" onClick={onSpendProgress}>{hasSpendWaiver ? '年费达标进度' : '消费达标进度'}</Button>
+          )}
         </div>
       </div>
       {labels && <Typography.Text type="secondary">{labels}</Typography.Text>}
@@ -166,7 +213,8 @@ export function CardAnnualFeeSummary({ policy, onEdit, onTrack }: {
       {pointsText && (
         <div>
           {pointsText}
-          {remainingPoints != null && (remainingPoints === 0 ? ' · 积分已足够，按银行要求办理抵扣'
+          {pointsExpired ? ' · 积分兑换已截止'
+            : remainingPoints != null && (remainingPoints === 0 ? ' · 积分已足够，按银行要求办理抵扣'
             : ` · 还差 ${remainingPoints.toLocaleString('zh-CN')} 积分`)}
         </div>
       )}

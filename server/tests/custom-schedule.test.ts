@@ -68,6 +68,20 @@ describe('自定义周期目标日期', () => {
       .toEqual(['2026-08-25', '2026-08-28', '2026-08-31', '2026-09-03']);
   });
 
+  it('截止当天仍按原周期生成，之后的范围和预览均为空', () => {
+    const input = schedule({
+      type: 'daily',
+      interval: 2,
+      dayOfMonth: null,
+      endDate: fromYmd('2026-08-29'),
+    });
+    const from = fromYmd('2026-08-27');
+    const expected = ['2026-08-27', '2026-08-29'];
+    expect(customTargetDatesBetween(input, from, fromYmd('2026-09-01')).map(ymd)).toEqual(expected);
+    expect(nextCustomTargetDates(input, from).map(ymd)).toEqual(expected);
+    expect(nextCustomTargetDates(input, fromYmd('2026-08-30'))).toEqual([]);
+  });
+
   it('最早提前提醒日就是内部期次生成日，空列表则使用目标日', () => {
     const target = fromYmd('2026-09-10');
     expect(ymd(occurrenceAvailableDate(target, [7, 3, 0]))).toBe('2026-09-03');
