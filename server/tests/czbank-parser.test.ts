@@ -62,6 +62,13 @@ describe('浙商银行邮件账单', () => {
     });
   });
 
+  it('支持实际邮件汇总表中应还金额左侧的空白占位列', () => {
+    const withSpacer = html
+      .replace('<tr><td>本期应还金额', '<tr><td>&nbsp;</td><td>本期应还金额')
+      .replace('<tr><td><font>&yen;', '<tr><td>&nbsp;</td><td><font>&yen;');
+    expect(tryParse({ ...mail, html: withSpacer })).toEqual(tryParse(mail));
+  });
+
   it('忽略其他发件人或非账单标题，指定解析器也拒绝假后缀发件人', () => {
     expect(matchParser('shop@example.test', subject)).toBeNull();
     expect(matchParser(sender, '浙商银行信用卡活动通知')).toBeNull();

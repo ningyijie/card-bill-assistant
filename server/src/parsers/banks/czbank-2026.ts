@@ -27,8 +27,9 @@ export const czbank2026Parser: BankParser = {
     const { rows, text } = statementTable(mail.html);
     const accountHeader = rows.findIndex(({ cells }) =>
       ['信用额度', '最低还款额', '账单日', '到期还款日'].every((label, index) => cells[index]?.startsWith(label)));
+    // 邮件有时在汇总表最左侧放空白占位单元格。
     const balanceHeader = rows.findIndex(({ cells }) =>
-      cells[0]?.startsWith('本期应还金额') && cells.some((cell) => cell.includes('上期账单金额')));
+      cells.find((cell) => cell !== '')?.startsWith('本期应还金额') && cells.some((cell) => cell.includes('上期账单金额')));
     const detailHeader = rows.findIndex(({ cells }) =>
       ['交易日', '记账日', '交易摘要', '交易金额', '卡号末四位'].every((label, index) => cells[index]?.startsWith(label)));
     if (accountHeader < 0 || balanceHeader <= accountHeader || detailHeader <= balanceHeader) return [];
