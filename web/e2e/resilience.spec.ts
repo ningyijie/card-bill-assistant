@@ -53,18 +53,27 @@ test('换肤保留在途还款锁，失败保留输入且只提交一次', async
   await expect(dialog).toBeVisible(); await expect(dialog.getByPlaceholder('累计已还金额')).toHaveValue('3.00');
 });
 
-test('两端试解析原文绑定执行账户，读取失败留在原文并支持重试返回', async ({ page, request }) => {
-  await request.post('/api/email/accounts', { data: { email: 'second@example.test', imapHost: 'imap.example.test', imapPort: 993, enabled: true } });
+test('两端可指定试解析文件夹，原文绑定执行来源并支持重试返回', async ({ page, request }) => {
+  const folder = '其他文件夹/银行电子账单';
+  await request.post('/api/email/accounts', { data: { email: 'demo@example.test', mailbox: folder, imapHost: 'imap.example.test', imapPort: 993, enabled: true } });
+  await request.post('/api/email/accounts', { data: { email: 'second@example.test', mailbox: '备用账单', imapHost: 'imap.example.test', imapPort: 993, enabled: true } });
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 }); await page.goto('/parsers');
+    await expect(page.getByText('收件箱（INBOX）', { exact: true }).first()).toBeVisible();
+    await page.getByLabel('邮件文件夹', { exact: false }).click();
+    await page.locator('.ant-select-dropdown:visible').getByText(folder, { exact: true }).click();
+    const trial = page.waitForRequest('**/api/email/dry-run');
     await page.getByRole('button', { name: /开始试解析/ }).click();
+    expect((await trial).postDataJSON()).toMatchObject({ accountId: 2 });
     await expect(page.getByText('试解析完成：1 封中 1 封可解析')).toBeVisible();
     await page.getByLabel('邮箱账户', { exact: false }).click(); await page.getByText('second@example.test', { exact: true }).last().click();
-    await request.post('/__fixture', { data: { failNext: '/api/email/accounts/1/messages/1234' } });
+    await expect(page.getByText('备用账单', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(`邮件来源 demo@example.test · ${folder}`)).toBeVisible();
+    await request.post('/__fixture', { data: { failNext: '/api/email/accounts/2/messages/1234' } });
     await page.getByRole('button', { name: width < 1024 ? /查看邮件原文/ : /查看$/ }).click();
     const body = width < 1024 ? page.locator('section[aria-label="邮件原文"]') : page.getByRole('dialog');
     await expect(body.getByText('请求暂时失败，请重试', { exact: true })).toBeVisible();
-    const loaded = page.waitForResponse('**/api/email/accounts/1/messages/1234'); await body.getByRole('button', { name: '重试', exact: true }).click(); expect((await loaded).status()).toBe(200);
+    const loaded = page.waitForResponse('**/api/email/accounts/2/messages/1234'); await body.getByRole('button', { name: '重试', exact: true }).click(); expect((await loaded).status()).toBe(200);
     await expect(body.getByText('交通银行电子账单（示例）', { exact: false })).toBeVisible();
     if (width < 1024) await page.locator('.mobile-nav-back-button').click(); else await body.locator('.ant-modal-close').click();
     await expect(page.getByRole('button', { name: width < 1024 ? /查看邮件原文/ : /查看$/ })).toBeVisible();

@@ -1,5 +1,6 @@
 import { useViewState } from '../lib/viewState';
 import { displayDate } from '../lib/displayDate';
+import { folderName, groupEmailAccounts, mailboxPath } from '../lib/emailAccounts';
 import AccountForm, { type AccountFormValues, type AccountFormDraft } from '../components/EmailAccountForm';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
@@ -39,13 +40,8 @@ import {
 import './email.css';
 
 function emailFolderLabel(account: EmailAccount): string {
-  return account.mailbox && account.mailbox !== 'INBOX'
-    ? `${account.email} · ${account.mailbox}`
-    : account.email;
-}
-
-function folderName(account: EmailAccount): string {
-  return !account.mailbox || account.mailbox === 'INBOX' ? '收件箱（INBOX）' : account.mailbox;
+  const mailbox = mailboxPath(account);
+  return mailbox === 'INBOX' ? account.email : `${account.email} · ${mailbox}`;
 }
 
 type AccountFolderRow = { key: number; label: string; account: EmailAccount; children?: never };
@@ -57,14 +53,7 @@ type AccountRow = AccountFolderRow | {
 };
 
 function groupAccounts(accounts: EmailAccount[]): AccountRow[] {
-  const groups = new Map<string, EmailAccount[]>();
-  for (const account of accounts) {
-    const key = account.email.trim().toLowerCase();
-    const group = groups.get(key);
-    if (group) group.push(account);
-    else groups.set(key, [account]);
-  }
-  return Array.from(groups, ([email, [first, ...others]]) => {
+  return Array.from(groupEmailAccounts(accounts), ([email, [first, ...others]]) => {
     if (!others.length) return { key: first.id, label: emailFolderLabel(first), account: first };
     return {
       key: email,

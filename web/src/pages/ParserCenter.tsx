@@ -22,6 +22,7 @@ import {
 import { BankOutlined, EyeOutlined, PlayCircleOutlined, ReloadOutlined } from '../skins/icons';
 import { formatMoney } from '../lib/money';
 import { nicknameForTail, withCardNickname } from '../lib/cardDisplay';
+import { folderName, groupEmailAccounts, mailboxPath } from '../lib/emailAccounts';
 import { useResource } from '../lib/useResource';
 import { Virtuoso } from 'react-virtuoso';
 import { api, ApiError } from '../api/client';
@@ -32,6 +33,10 @@ import { useResponsive, useResetOnModeChange } from '../responsive';
 import { useHistoryGate } from '../historyGate';
 import { MobileFlow, MobilePullToRefresh, useCoalescedRefresh } from '../components/MobilePrimitives';
 import './parser-center.css';
+
+function defaultFolderId(folders: EmailAccount[]): number | undefined {
+  return (folders.find((account) => mailboxPath(account) === 'INBOX') ?? folders[0])?.id;
+}
 
 function ParsedBillSummary({ bill, cards }: { bill: NonNullable<DryRunResult['bills']>[number]; cards: CardDisplayIdentity[] }) {
   const nickname = nicknameForTail(cards, bill.bankName, bill.cardLast4);
@@ -53,7 +58,7 @@ export default function ParserCenter() {
   const [parsers, setParsers] = useState<ParserInfo[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [running, setRunning] = useState(false);
-  const [resultSession, setResultSession] = useState<{ accountId: number; results: DryRunResult[] } | null>(null);
+  const [resultSession, setResultSession] = useState<{ accountId: number; source: string; results: DryRunResult[] } | null>(null);
   const [viewing, setViewing] = useState<{ accountId: number; uid: number } | null>(null);
   const [viewBody, setViewBody] = useState<MailBody | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
@@ -61,12 +66,14 @@ export default function ParserCenter() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [resultPage, setResultPage] = useState(1);
   const [mobileScrollParent, setMobileScrollParent] = useState<HTMLElement | null>(null);
-  const [accountSelectOpen, setAccountSelectOpen] = useState(false);
-  const [parserSelectOpen, setParserSelectOpen] = useState(false);
+  const [openPicker, setOpenPicker] = useState<'email' | 'folder' | 'parser' | null>(null);
   const viewGeneration = useRef(0);
   const runningRef = useRef(false);
   const viewLoadingRef = useRef(false);
-  const [form] = Form.useForm<{ accountId: number; mode: 'count' | 'days'; limit: number; sinceDays: number; parserId?: string }>();
+  const [form] = Form.useForm<{ emailKey: string; accountId: number; mode: 'count' | 'days'; limit: number; sinceDays: number; parserId?: string }>();
+  const accountsByEmail = useMemo(() => groupEmailAccounts(accounts), [accounts]);
+  const emailKey = Form.useWatch('emailKey', form);
+  const availableFolders = accountsByEmail.get(emailKey) ?? [];
 
   const parserGroups = useMemo(() => {
     const groups = new Map<string, ParserInfo[]>();
@@ -78,10 +85,7 @@ export default function ParserCenter() {
     return [...groups.entries()].map(([bankName, items]) => ({ bankName, items }));
   }, [parsers]);
 
-  useResetOnModeChange(() => {
-    setAccountSelectOpen(false);
-    setParserSelectOpen(false);
-  });
+  useResetOnModeChange(() => setOpenPicker(null));
 
   useEffect(() => {
     if (!isMobile) {
@@ -115,11 +119,14 @@ export default function ParserCenter() {
   }, [refresh]);
 
   useEffect(() => {
-    // 账户数据出现后，试解析表单已经随当前渲染完成挂载，再连接默认账户，避免操作未挂载的 useForm 实例。
-    if (accounts.length > 0 && form.getFieldValue('accountId') == null) {
-      form.setFieldValue('accountId', accounts[0].id);
-    }
-  }, [accounts, form]);
+    const first = accountsByEmail.entries().next().value;
+    if (!first) return;
+    const { emailKey, accountId } = form.getFieldsValue(['emailKey', 'accountId']);
+    const folders = accountsByEmail.get(emailKey);
+    if (folders?.some((account) => account.id === accountId)) return;
+    const [key, selectedFolders] = folders ? [emailKey, folders] : first;
+    form.setFieldsValue({ emailKey: key, accountId: defaultFolderId(selectedFolders) });
+  }, [accountsByEmail, form]);
 
   const run = async () => {
     if (runningRef.current || !historyGate.mayRunRestrictedAction()) {
@@ -139,15 +146,21 @@ export default function ParserCenter() {
       message.warning(historyGate.blockedReason);
       return;
     }
+    const account = accountsByEmail.get(values.emailKey)?.find((item) => item.id === values.accountId);
+    if (!account) {
+      runningRef.current = false;
+      message.warning('请选择邮件文件夹');
+      return;
+    }
     setRunning(true);
     try {
       const r = await api.post<{ results: DryRunResult[] }>('/api/email/dry-run', {
-        accountId: values.accountId,
+        accountId: account.id,
         limit: values.mode === 'days' ? 1000 : values.limit,
         parserId: values.parserId || undefined,
         sinceDays: values.mode === 'days' ? values.sinceDays : undefined,
       });
-      setResultSession({ accountId: values.accountId, results: r.results });
+      setResultSession({ accountId: account.id, source: `${account.email} · ${folderName(account)}`, results: r.results });
       setResultPage(1);
       const parsed = r.results.filter((x) => x.parsed).length;
       message.info(`试解析完成：${r.results.length} 封中 ${parsed} 封可解析`);
@@ -373,19 +386,31 @@ export default function ParserCenter() {
               className={'parser-run-form' + (isMobile ? ' mobile-parser-form' : '')}
               style={{ marginBottom: 16 }}
             >
-              <Form.Item name="accountId" label="邮箱账户" rules={[{ required: true, message: '必选' }]}>
+              <Form.Item name="emailKey" label="邮箱账户" rules={[{ required: true, message: '必选' }]}>
                 <Select
-                  open={accountSelectOpen}
-                  onOpenChange={setAccountSelectOpen}
+                  open={openPicker === 'email'}
+                  onOpenChange={(open) => setOpenPicker(open ? 'email' : null)}
                   style={{ width: '100%' }}
-                  options={accounts.map((a) => ({ value: a.id, label: a.email }))}
+                  options={Array.from(accountsByEmail, ([key, [account]]) => ({ value: key, label: account.email }))}
+                  onChange={(key) => form.setFieldValue('accountId', defaultFolderId(accountsByEmail.get(key) ?? []))}
+                />
+              </Form.Item>
+              <Form.Item name="accountId" label="邮件文件夹" rules={[{ required: true, message: '必选' }]}>
+                <Select
+                  open={openPicker === 'folder'}
+                  onOpenChange={(open) => setOpenPicker(open ? 'folder' : null)}
+                  style={{ width: '100%' }}
+                  options={availableFolders.map((account) => {
+                    const name = folderName(account);
+                    return { value: account.id, label: name, title: name };
+                  })}
                 />
               </Form.Item>
               <Form.Item name="parserId" label="指定解析器">
                 <Select
                   allowClear
-                  open={parserSelectOpen}
-                  onOpenChange={setParserSelectOpen}
+                  open={openPicker === 'parser'}
+                  onOpenChange={(open) => setOpenPicker(open ? 'parser' : null)}
                   placeholder="自动匹配"
                   style={{ width: '100%' }}
                   options={parsers.map((p) => ({ value: p.id, label: `${p.bankName} (${p.id})` }))}
@@ -428,6 +453,12 @@ export default function ParserCenter() {
             </Form>
 
             {running && <Spin description="拉取邮件并解析中…"><div style={{ height: 60 }} /></Spin>}
+
+            {resultSession && (
+              <Typography.Paragraph className="parser-result-source" type="secondary">
+                邮件来源 {resultSession.source}
+              </Typography.Paragraph>
+            )}
 
             {resultSession && isMobile && (
               <div className="mobile-parser-results">

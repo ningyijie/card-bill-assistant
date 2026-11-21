@@ -44,6 +44,7 @@ import { spdb2026Parser } from './banks/spdb-2026';
 import { spdb2021Parser } from './banks/spdb-2021';
 import { bob2026Parser } from './banks/bob-2026';
 import { bob2021Parser } from './banks/bob-2021';
+import { czbank2026Parser } from './banks/czbank-2026';
 
 /**
  * 解析器注册表：每银行可注册多个解析器（现役 + 历史旧版），代码注册制。
@@ -91,6 +92,7 @@ const registry: RegisteredParser[] = [
   spdb2021Parser,
   bob2026Parser,
   bob2021Parser,
+  czbank2026Parser,
 ];
 
 export function registerParser(parser: RegisteredParser): void {
