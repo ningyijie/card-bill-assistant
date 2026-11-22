@@ -8,6 +8,7 @@ import { displayDate } from '../lib/displayDate';
 import { formatMoney } from '../lib/money';
 import { useResource } from '../lib/useResource';
 import { OfferEditor } from './offers/OfferEditor';
+import { WechatOfferSources } from './offers/WechatOfferSources';
 import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
@@ -20,6 +21,13 @@ const statusInfo = {
   ready: { name: '规则匹配', color: 'green' },
   action: { name: '先领取或兑换', color: 'blue' },
   check: { name: '待核对', color: 'gold' },
+};
+const emptyReasons = {
+  merchant: '活动库暂时没有这个商户的可查询活动。',
+  date: '已收录这个商户的活动，当前选择的日期没有生效的活动。',
+  filters: '当前预算、地点、时间或支付方式与已收录的活动条件不符。',
+  card: '已收录这个商户的活动，当前卡片中没有匹配的卡。',
+  record: '匹配的活动已使用、余量为零，或你已标记不符合资格。',
 };
 
 function detail(rule: OfferRule) {
@@ -144,7 +152,7 @@ export default function Offers() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [sourceBusy, setSourceBusy] = useState<string>();
-  const [editor, setEditor] = useState<{ kind: OfferRule['kind']; offer?: CatalogOffer }>();
+  const [editor, setEditor] = useState<{ kind: OfferRule['kind']; offer?: CatalogOffer; merchant?: string }>();
   const [profile, setProfile] = useState<OfferCard>();
   const [record, setRecord] = useState<RecordTarget>();
   const [archive, setArchive] = useState<CatalogOffer>();
@@ -189,7 +197,7 @@ export default function Offers() {
       if (enabled == null) {
         const result = await api.post<{ updated: number }>(`/api/offers/sources/${source.key}/refresh`);
         message.success(result.updated ? `已更新 ${result.updated} 条活动` : '来源没有变化');
-        refresh();
+        refreshQuery();
       } else await api.put(`/api/offers/sources/${source.key}`, { enabled });
     } catch (reason) { message.error(reason instanceof Error ? reason.message : '活动来源更新失败'); }
     finally { setSourceBusy(undefined); void sources.refresh(); }
@@ -202,7 +210,10 @@ export default function Offers() {
         const applicable = cards.filter((card) => offer.applicableCardIds.includes(card.id));
         const selected = applicable.find((card) => card.id === selectedTrackCards[offer.id]) ?? applicable[0];
         return <Card key={offer.id} size="small" title={offer.rule.title}
-          extra={offer.review !== 'ready' && <Tag>{offer.review === 'draft' ? '待核对' : '已归档'}</Tag>}>
+          extra={<Space size={4} wrap>
+            {offer.sourceKey?.startsWith('wechat:') && <Tag>公众号</Tag>}
+            {offer.review !== 'ready' && <Tag>{offer.review === 'draft' ? '待核对' : '已归档'}</Tag>}
+          </Space>}>
           <Flex vertical gap={8}>
             <RuleDetails rule={offer.rule} verifiedAt={offer.verifiedAt} />
             {favorite && offer.records.filter(({ state }) => state.favorite).map(({ cardId, state }) => {
@@ -263,6 +274,7 @@ export default function Offers() {
       {!cards.length && <Empty description="请先在卡片管理中添加信用卡" />}
     </div> },
     { key: 'sources', label: '活动来源', children: <Flex vertical gap={12}>
+      {tab === 'sources' && <WechatOfferSources onImported={refresh} />}
       {sources.error && <Alert type="error" title={sources.error} />}
       {sources.loading && <Spin />}
       {sources.data?.map((source) => <Card key={source.key} size="small" title={source.name}>
@@ -294,6 +306,9 @@ export default function Offers() {
         {error && <Alert type="error" title={error} />}
         {answer && <>
           <Typography.Title level={5} className="offers-results-title">{answer.query.merchant} · {answer.query.date}</Typography.Title>
+          {Boolean(answer.syncIssues?.length) && <Alert type="warning"
+            title={`${answer.syncIssues!.join('、')}同步失败，仍可查询已收录的活动。`}
+            action={<Button size="small" onClick={() => setTab('sources')}>查看来源状态</Button>} />}
           {answer.tiers.length > 0 && <Flex wrap gap={8} aria-label="按消费门槛推荐">
             {answer.tiers.map((tier) => {
               const match = answer.results.find((row) => row.offerId === tier.offerId && row.card.id === tier.cardId);
@@ -314,10 +329,15 @@ export default function Offers() {
               <CandidateCard key={`${result.offerId}:${result.card.id}`} result={result} date={answer.query.date}
                 first={index === 0 && !answer.prefersCombination} follow={setRecord} />
             ))}</div>
-          ) : <Empty description="本地活动库没有匹配记录。可以刷新公开来源，或添加银行 App 中看到的活动。" />}
+          ) : <Empty description={emptyReasons[answer.emptyReason ?? 'merchant']}>
+            <Space wrap>
+              <Button onClick={() => setTab('sources')}>查看活动来源</Button>
+              <Button onClick={() => setEditor({ kind: 'activity', merchant: answer.query.merchant })}>录入银行 App 中的活动</Button>
+            </Space>
+          </Empty>}
         </>}
       </>}
-      {editor && <OfferEditor offer={editor.offer} kind={editor.kind} cards={cards} library={library} close={() => setEditor(undefined)}
+      {editor && <OfferEditor offer={editor.offer} kind={editor.kind} merchant={editor.merchant} cards={cards} library={library} close={() => setEditor(undefined)}
         afterSave={(kind) => { refreshQuery(); setTab(kind === 'benefit' ? 'benefits' : 'manage'); }} />}
       {profile && <CardProfileEditor card={profile} close={() => setProfile(undefined)} saved={refreshQuery} />}
       {record && <OfferRecordEditor target={record} close={() => setRecord(undefined)} saved={refreshQuery} />}

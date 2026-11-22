@@ -15,8 +15,8 @@ const separate = (value?: string) => value?.split(/[，,、\n]/).map((part) => p
 
 type OfferDraft = Omit<OfferRule, 'merchants' | 'cities' | 'stores'> & { merchants?: string; cities?: string; stores?: string };
 
-export function OfferEditor({ offer, kind, cards, library, close, afterSave }: {
-  offer?: CatalogOffer; kind: OfferRule['kind']; cards: OfferCard[]; library: CatalogOffer[];
+export function OfferEditor({ offer, kind, merchant, cards, library, close, afterSave }: {
+  offer?: CatalogOffer; kind: OfferRule['kind']; merchant?: string; cards: OfferCard[]; library: CatalogOffer[];
   close: () => void; afterSave: (kind: OfferRule['kind']) => void;
 }) {
   const [form] = Form.useForm<OfferDraft>();
@@ -73,7 +73,7 @@ export function OfferEditor({ offer, kind, cards, library, close, afterSave }: {
     <Modal open title={offer ? '编辑权益与活动' : '新增权益或活动'} footer={null} onCancel={close} width={760}>
       <Form<OfferDraft> layout="vertical" form={form} onFinish={(value) => void save(value, 'ready')}
         initialValues={current ? { ...current, merchants: current.merchants.join('、'), cities: current.cities.join('、'), stores: current.stores.join('、') }
-          : { kind, discount: { type: 'fixed' }, cardIds: [], channels: [], weekdays: [] }}>
+          : { kind, merchants: merchant, discount: { type: 'fixed' }, cardIds: [], channels: [], weekdays: [] }}>
         <Space wrap className="offers-form-toolbar">
           <Button loading={reading} onClick={() => file.current?.click()}>上传活动截图</Button>
           <input type="file" hidden ref={file} accept="image/png,image/jpeg" onChange={(event) => {
@@ -108,7 +108,7 @@ export function OfferEditor({ offer, kind, cards, library, close, afterSave }: {
             <Form.Item name={['discount', 'purchasePrice']} label="领券另付金额（元）"><InputNumber {...numbers} /></Form.Item>
           </>}
           <Form.Item name="channels" label="支付方式"><Select mode="multiple" options={options(paymentChannels)} /></Form.Item>
-          <Form.Item name="sourceUrl" label="官方说明链接"><Input placeholder="https://" maxLength={600} /></Form.Item>
+          <Form.Item name="sourceUrl" label="活动原文链接"><Input placeholder="https://" maxLength={600} /></Form.Item>
           <Form.Item className="offers-field-wide" name="entry" label="领取 / 使用路径"><Input.TextArea autoSize maxLength={300} /></Form.Item>
         </div>
         <Collapse size="small" items={[{ key: 'conditions', label: '日期、门店和资格', forceRender: true,

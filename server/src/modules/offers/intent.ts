@@ -8,12 +8,12 @@ const textChannels = [
   [/微信/, 'wechat'], [/支付宝/, 'alipay'], [/云闪付|银联扫码/, 'unionpay'],
   [/掌银|掌上生活|银行App/i, 'bank_app'], [/刷卡|POS/i, 'pos'], [/商户App/i, 'merchant_app'],
 ] as const;
-const aliases = ['海底捞', '奈雪', '喜茶', '瑞幸', '星巴克', '肯德基', '麦当劳', '山姆'];
+export const commonOfferMerchants = ['海底捞', '奈雪', '喜茶', '瑞幸', '星巴克', '肯德基', '麦当劳', '山姆'];
 
 export function extractOfferIntent(question: string, merchants: string[], now = new Date()): OfferQuery | null {
   const text = question.normalize('NFKC').trim();
   const key = normalizedName(text);
-  const known = [...new Set([...merchants, ...aliases])].sort((a, b) => b.length - a.length);
+  const known = [...new Set([...merchants, ...commonOfferMerchants])].sort((a, b) => b.length - a.length);
   const merchant = known.find((name) => key.includes(normalizedName(name)))
     ?? text.match(/(?:吃|喝|买|去)\s*([^ ，。！？,.?]{1,28}?)(?=\s*(?:[,，。！？?]|有什么|怎么|用什么|用哪|哪个|有优惠|有券|$))/)?.[1]
     ?? text.match(/^([^\s，。！?？]{1,30})\s*(?:有[什么]*优惠|用哪张卡|优惠)[?？]?$/)?.[1]

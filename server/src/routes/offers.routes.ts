@@ -7,7 +7,8 @@ import { extractOfferIntent, ollamaEnabled, resolveMerchantWithOllama } from '..
 import { cardProfileSchema, idSchema, offerQuerySchema, offerRecordSchema, offerWriteSchema, readCardProfile, readOfferRule } from '../modules/offers/rules';
 import { appliesToCard } from '../modules/offers/compare';
 import { knownOfferMerchants, offerCatalog, saveOfferInTransaction, searchRewardOffers } from '../modules/offers/service';
-import { offerSourceStatus, offerSources, refreshOfferSource } from '../modules/offers/sources';
+import { initialOfferSources, offerSourceStatus, offerSources, refreshOfferSource } from '../modules/offers/sources';
+import { configureWechatFeed, importWechatArticle, refreshWechatFeed, wechatFeedSettings, wechatFeedStatus, wechatImportSchema } from '../modules/offers/wechat-source';
 import { withTransactionRetry } from '../parsers/pipeline';
 import { requireAuth } from './middleware';
 
@@ -19,10 +20,17 @@ router.get('/catalog', asyncHandler(async (_req, res) => {
   res.json({ ...await offerCatalog(), ollamaEnabled: ollamaEnabled() });
 }));
 
+async function lookup(query: z.infer<typeof offerQuerySchema>) {
+  const sources = initialOfferSources(query.merchant);
+  const attempts = await Promise.allSettled(sources.map(({ key }) => refreshOfferSource(key, 'initial')));
+  const syncIssues = sources.filter((_, index) => attempts[index].status === 'rejected').map(({ name }) => name);
+  return { ...await searchRewardOffers(query), syncIssues };
+}
+
 router.get('/search', asyncHandler(async (req, res) => {
   const query = offerQuerySchema.parse({ ...req.query,
     budget: typeof req.query.budget === 'string' && req.query.budget.trim() ? Number(req.query.budget) : undefined });
-  res.json(await searchRewardOffers(query));
+  res.json(await lookup(query));
 }));
 
 const askSchema = offerQuerySchema.partial().extend({ question: z.string().trim().min(1).max(240) });
@@ -34,7 +42,7 @@ router.post('/ask', asyncHandler(async (req, res) => {
   const merchant = explicit.merchant ?? local?.merchant ?? modelMerchant;
   if (!merchant) throw new ApiError(400, '请说出想去的商户，例如「今晚吃海底捞」');
   const filters = Object.fromEntries(Object.entries(explicit).filter(([, value]) => value !== undefined));
-  const result = await searchRewardOffers(offerQuerySchema.parse({ ...local, ...filters, merchant }));
+  const result = await lookup(offerQuerySchema.parse({ ...local, ...filters, merchant }));
   res.json({ ...result, interpretation: modelMerchant ? 'ollama' : 'local' });
 }));
 
@@ -46,7 +54,16 @@ router.put('/sources/:key', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 router.post('/sources/:key/refresh', asyncHandler(async (req, res) => {
-  res.json(await refreshOfferSource(sourceKeySchema.parse(req.params.key), true));
+  res.json(await refreshOfferSource(sourceKeySchema.parse(req.params.key), 'manual'));
+}));
+router.get('/werss', asyncHandler(async (_req, res) => { res.json(await wechatFeedStatus()); }));
+router.put('/werss', asyncHandler(async (req, res) => {
+  await configureWechatFeed(wechatFeedSettings.parse(req.body));
+  res.json({ ok: true });
+}));
+router.post('/werss/refresh', asyncHandler(async (_req, res) => { res.json(await refreshWechatFeed(true)); }));
+router.post('/wechat-article', asyncHandler(async (req, res) => {
+  res.json(await importWechatArticle(wechatImportSchema.parse(req.body)));
 }));
 
 router.post('/screenshot-draft', express.raw({ type: ['image/png', 'image/jpeg'], limit: '8mb' }), asyncHandler(async (req, res) => {

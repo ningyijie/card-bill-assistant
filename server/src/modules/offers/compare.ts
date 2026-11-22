@@ -16,7 +16,7 @@ export interface SearchOffer {
   records: Map<number, OfferRecordState>;
 }
 
-const canonicalBrands: Record<string, string> = { 海底捞火锅: '海底捞', 奈雪的茶: '奈雪', 喜茶go: '喜茶' };
+const canonicalBrands: Record<string, string> = { 海底捞火锅: '海底捞', 奈雪的茶: '奈雪', 奈雪の茶: '奈雪', 喜茶go: '喜茶' };
 export function normalizedName(value: string): string {
   const clean = value.normalize('NFKC').toLowerCase().replace(/[\p{P}\p{Z}\s]/gu, '');
   return canonicalBrands[clean] ?? clean;
@@ -136,8 +136,9 @@ function fixedCombinations(candidates: Candidate[], budget: number, channel?: Of
 }
 
 export function compareOffers(offers: SearchOffer[], cards: RewardCard[], query: OfferQuery & { date: string }) {
-  const chosen = offers.filter(({ rule }) => listed(query.merchant, rule.merchants) && activeOn(rule, query.date)
-    && (query.budget === undefined || query.budget >= (rule.threshold ?? 0))
+  const merchantOffers = offers.filter(({ rule }) => listed(query.merchant, rule.merchants));
+  const dated = merchantOffers.filter(({ rule }) => activeOn(rule, query.date));
+  const chosen = dated.filter(({ rule }) => (query.budget === undefined || query.budget >= (rule.threshold ?? 0))
     && (!query.city || !rule.cities.length || rule.cities.some((city) => normalizedCity(city) === normalizedCity(query.city!)))
     && (!query.store || !rule.stores.length || listed(query.store, rule.stores))
     && (!query.channel || !rule.channels.length || rule.channels.includes(query.channel))
@@ -153,6 +154,8 @@ export function compareOffers(offers: SearchOffer[], cards: RewardCard[], query:
     || (a.quote.comparableCost ?? Infinity) - (b.quote.comparableCost ?? Infinity)
     || (a.rule.threshold ?? 0) - (b.rule.threshold ?? 0) || a.offerId - b.offerId || a.card.id - b.card.id;
   candidates.sort(rank);
+  const emptyReason = candidates.length ? null : !merchantOffers.length ? 'merchant' : !dated.length ? 'date'
+    : !chosen.length ? 'filters' : !chosen.some(({ rule }) => cards.some((card) => appliesToCard(rule, card))) ? 'card' : 'record';
   const combinations = query.budget === undefined ? [] : fixedCombinations(candidates, query.budget, query.channel);
 
   // 无预算时按达到各优惠门槛的金额重新比较一次，提示何时值得换方案。
@@ -167,6 +170,6 @@ export function compareOffers(offers: SearchOffer[], cards: RewardCard[], query:
     const best = eligible[0];
     return best ? [{ amount, offerId: best.offerId, cardId: best.card.id }] : [];
   }) : [];
-  return { query, results: candidates.slice(0, 100), tiers, combinations,
+  return { query, results: candidates.slice(0, 100), tiers, combinations, emptyReason,
     prefersCombination: Boolean(combinations.length && (candidates[0]?.quote.comparableCost ?? Infinity) > combinations[0].pay) };
 }

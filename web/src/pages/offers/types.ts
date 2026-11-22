@@ -61,6 +61,8 @@ export interface OfferSearchResult {
   tiers: { amount: number; offerId: number; cardId: number }[];
   combinations: { card: OfferCandidate['card']; offerIds: number[]; titles: string[]; channels: PaymentChannel[]; saving: number; pay: number }[];
   prefersCombination: boolean;
+  emptyReason?: 'merchant' | 'date' | 'filters' | 'card' | 'record' | null;
+  syncIssues?: string[];
   interpretation?: 'local' | 'ollama';
 }
 export interface OfferSource { key: string; name: string; url: string; enabled: boolean; lastSuccess: string | null; error: string | null }

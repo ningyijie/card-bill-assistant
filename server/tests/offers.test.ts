@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const recordRows = vi.hoisted(() => vi.fn());
 const spendProgress = vi.hoisted(() => vi.fn());
-vi.mock('../src/lib/prisma', () => ({ prisma: { cardOfferRecord: { findMany: recordRows } } }));
+const sourceDb = vi.hoisted(() => ({ findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() }));
+vi.mock('../src/lib/prisma', () => ({ prisma: { cardOfferRecord: { findMany: recordRows }, rewardSource: sourceDb } }));
 vi.mock('../src/modules/bills/card-spend-service', () => ({ loadCardSpendProgress: spendProgress }));
 
 import { fromYmd } from '../src/lib/dates';
@@ -12,7 +13,7 @@ import { extractOfferIntent } from '../src/modules/offers/intent';
 import { collectOfferReminderEvents } from '../src/modules/offers/reminders';
 import { offerRecordSchema, offerSchema } from '../src/modules/offers/rules';
 import type { OfferRecordState, RewardOfferInput } from '../src/modules/offers/rules';
-import { offerSources, parseOfficialOfferPage } from '../src/modules/offers/sources';
+import { initialOfferSources, offerSources, parseOfficialOfferPage, refreshOfferSource } from '../src/modules/offers/sources';
 
 const date = '2026-11-22';
 const cards: RewardCard[] = [
@@ -74,9 +75,19 @@ describe('权益与活动', () => {
     expect(response.combinations).toEqual([expect.objectContaining({ offerIds: [1, 2], saving: 40, pay: 160, channels: ['wechat'] })]);
     expect(compareOffers(rows, cards, { merchant: '海底捞', date, budget: 199 }).combinations).toEqual([]);
   });
+
+  it('能指出空结果是未收录、日期、筛选条件还是没有适用卡', () => {
+    const rows = [offer(1, { startsOn: '2026-11-01', endsOn: '2026-11-30', threshold: 200 })];
+    const query = { merchant: '海底捞', date };
+    expect(compareOffers(rows, cards, { ...query, merchant: '奈雪' }).emptyReason).toBe('merchant');
+    expect(compareOffers(rows, cards, { ...query, date: '2026-12-01' }).emptyReason).toBe('date');
+    expect(compareOffers(rows, cards, { ...query, budget: 199 }).emptyReason).toBe('filters');
+    expect(compareOffers(rows, cards.slice(1), query).emptyReason).toBe('card');
+  });
 });
 
 describe('银行活动来源', () => {
+  afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
   it('按明细和标题的日期交集导入中信活动，随机上限与最低价分开', () => {
     const html = `<p>活动时间：2026年6月1日至2026年11月30日</p>
       <div>微信满立减</div><p>满<strong>200元</strong>随机立减最高<strong>88元</strong></p>
@@ -95,10 +106,44 @@ describe('银行活动来源', () => {
     const html = `<a href="${to}">信用卡周末消费立减优惠活动</a>
       <a href="${to}#again">信用卡周末消费立减优惠活动</a>
       <a href="https://example.org${to}">信用卡周末消费立减优惠活动</a>`;
-    const parsed = parseOfficialOfferPage(offerSources[1], html);
+    const parsed = parseOfficialOfferPage(offerSources.find(({ key }) => key === 'cib')!, html);
     expect(parsed).toEqual([expect.objectContaining({ review: 'draft', rule: expect.objectContaining({
       merchants: [], sourceUrl: 'https://creditcard.cib.com.cn/promotion/national/20261101.html',
     }) })]);
+  });
+
+  it('只导入明示品牌与本期时间，月累计消费不成为单笔门槛', () => {
+    const html = `<p>概况曾是2026年6月1日至2026年12月31日</p><table>
+      <tr><td>活动时间</td><td>2026年10月1日至2026年12月31日</td></tr>
+      <tr><td>活动对象</td><td>持卡超12个月的主卡持卡人</td></tr>
+      <tr><td>活动规则</td><td>每月消费满1999元/3999元/9999元，每日10:00开启兑换</td></tr>
+      <tr><td>咖啡奶茶场景</td><td>喜茶、奈雪饮品券</td><td>达标后凭权益+9积分兑换</td></tr>
+      </table>`;
+    const source = offerSources.find(({ key }) => key === 'citic-9-points')!;
+    const [entry] = parseOfficialOfferPage(source, html);
+    expect(entry.rule).toMatchObject({ startsOn: '2026-10-01', endsOn: '2026-12-31',
+      merchants: ['奈雪', '喜茶'], discount: { type: 'service' }, needsEligibility: true, claimAt: '10:00' });
+    expect(entry.rule.threshold).toBeUndefined();
+    expect(entry.rule.entry).toContain('和 9 积分');
+    expect(initialOfferSources('奈雪の茶').map(({ key }) => key)).toEqual(['citic-365-redeem', 'citic-9-points']);
+    expect(initialOfferSources('未收录商户')).toEqual([]);
+  });
+
+  it('首次相关查询共享进行中的同步，后续查询和关闭自动同步的来源不重复下载', async () => {
+    let lastAttempt: Date | null = null;
+    sourceDb.findUnique.mockImplementation(async ({ where }) => where.key === 'citic-9-points'
+      ? { enabled: false } : lastAttempt ? { enabled: true, lastAttempt } : null);
+    sourceDb.upsert.mockImplementation(async ({ create }) => { lastAttempt = create.lastAttempt; });
+    sourceDb.update.mockResolvedValue({});
+    const fetchPage = vi.fn(async () => new Response(null, { status: 304 }));
+    vi.stubGlobal('fetch', fetchPage);
+    await Promise.all([
+      refreshOfferSource('citic-365-redeem', 'initial'), refreshOfferSource('citic-365-redeem', 'initial'),
+    ]);
+    await refreshOfferSource('citic-365-redeem', 'initial');
+    await refreshOfferSource('citic-9-points', 'initial');
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(sourceDb.upsert).toHaveBeenCalledTimes(1);
   });
 });
 

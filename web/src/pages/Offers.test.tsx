@@ -38,3 +38,53 @@ it('手机和桌面共用的查询页面仅凭商户问句显示门槛、卡片�
   expect(screen.getByText(/满.*测试满减.*悦卡/)).toBeTruthy();
   expect(screen.getByText('首选')).toBeTruthy();
 });
+
+it('有收录但预算不足时提示筛选条件，并可从查询结果打开来源', async () => {
+  const sources = [{ key: 'citic-365', name: '中信活动源', enabled: true, lastSuccess: null, error: null, url: 'https://example.org' }];
+  vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/sources') ? sources : {
+    cards: [], offers: [], ollamaEnabled: false,
+  });
+  vi.spyOn(api, 'post').mockResolvedValue({
+    query: { merchant: '海底捞', date: '2026-11-22', budget: 199 },
+    tiers: [], combinations: [], results: [], prefersCombination: false, emptyReason: 'filters',
+  });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.change(screen.getByLabelText('你想买什么或去哪儿消费'), { target: { value: '今晚吃海底捞，预算199元' } });
+  fireEvent.click(screen.getByRole('button', { name: '查询划算方案' }));
+  expect(await screen.findByText('当前预算、地点、时间或支付方式与已收录的活动条件不符。')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '查看活动来源' }));
+  expect(await screen.findByText('中信活动源')).toBeTruthy();
+});
+
+it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘贴正文', async () => {
+  const address = 'http://192.168.1.3:8001/feed/MP_WXS_123456.rss';
+  const article = 'https://mp.weixin.qq.com/s/offer_test';
+  const feed = { url: '', enabled: false, error: null, lastSuccess: null, lastAttempt: null };
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url.endsWith('/werss')) return feed;
+    return url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false };
+  });
+  const save = vi.spyOn(api, 'put').mockImplementation(async () => {
+    Object.assign(feed, { url: address, enabled: true });
+    return { ok: true };
+  });
+  const importArticle = vi.spyOn(api, 'post').mockResolvedValueOnce({ updated: 0, needsContent: true })
+    .mockResolvedValueOnce({ updated: 1, needsContent: false });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
+  const rssInput = await screen.findByRole('textbox', { name: '公众号 RSS 地址' }) as HTMLInputElement;
+  await waitFor(() => expect(rssInput.disabled).toBe(false));
+  fireEvent.change(rssInput, { target: { value: address } });
+  fireEvent.click(screen.getByRole('button', { name: '保存订阅' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/werss', { url: address, enabled: true }));
+  fireEvent.click(screen.getByRole('button', { name: '导入公众号文章' }));
+  const linkInput = await screen.findByLabelText('微信文章链接') as HTMLInputElement;
+  fireEvent.change(linkInput, { target: { value: article } });
+  fireEvent.click(screen.getByRole('button', { name: '读取文章' }));
+  const articleBody = await screen.findByLabelText('文章正文');
+  expect(linkInput.value).toBe(article);
+  fireEvent.change(articleBody, { target: { value: '海底捞满 200 元减 50 元' } });
+  fireEvent.click(screen.getByRole('button', { name: '生成活动草稿' }));
+  await waitFor(() => expect(importArticle).toHaveBeenLastCalledWith('/api/offers/wechat-article',
+    expect.objectContaining({ url: article, text: '海底捞满 200 元减 50 元' })));
+});
