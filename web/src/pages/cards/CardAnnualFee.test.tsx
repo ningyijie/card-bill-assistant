@@ -1,7 +1,16 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import type { CardAnnualFeePolicy } from '../../api/types';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../../api/client';
+import type { CardAnnualFeePolicy, CardSpendRule } from '../../api/types';
 import { CardAnnualFeeFields, CardAnnualFeeSummary, validateAnnualFeePolicy } from './CardAnnualFee';
+import { CardSpendProgress } from './CardSpendProgress';
+
+const countRule: CardSpendRule = {
+  id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '文旅卡返现', basis: 'calendar_month', start: '2026-11',
+  currency: 'CNY', metric: 'count', count: 10, cashback: { rate: 1, cap: 100 },
+};
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('卡片年费进度', () => {
   const policy: CardAnnualFeePolicy = {
@@ -66,5 +75,36 @@ describe('卡片年费进度', () => {
     expect(screen.getByLabelText('首个账单月')).toBeTruthy();
     expect(screen.getByLabelText('每期目标金额')).toBeTruthy();
     expect(screen.getByLabelText('连续达标期数')).toBeTruthy();
+  });
+
+  it('配置单卡自然月笔数和次月返现，无需填写年费', async () => {
+    const policy = { spendRules: [countRule] };
+    render(<CardAnnualFeeFields value={policy} />);
+    expect(screen.getByLabelText('目标消费笔数')).toHaveProperty('value', '10');
+    expect(screen.getByLabelText('次月返现比例')).toHaveProperty('value', '1.00');
+    expect(screen.getByLabelText('次月返现上限')).toHaveProperty('value', '100.00');
+    await expect(validateAnnualFeePolicy(null, policy)).resolves.toBeUndefined();
+  });
+
+  it('消费进度显示笔数和返现规则，保存当前自然月的银行笔数', async () => {
+    const key = 'calendar_month:2026-11:count';
+    vi.spyOn(api, 'get').mockResolvedValue({
+      annualFee: null,
+      tracks: [{ rule: countRule, periods: [{
+        key, label: '2026-11', startsOn: '2026-11-01', endsOn: '2026-11-30',
+        bankAmount: null, estimatedAmount: null, bankCount: null,
+        estimatedCount: 7, remaining: 3, lastTransactionOn: '2026-11-20', canConfirm: true,
+      }], estimatedStreak: 0, bankStreak: 0 }],
+    });
+    const save = vi.spyOn(api, 'put').mockResolvedValue({});
+    render(<CardSpendProgress cardId={2} cardLabel="浙商银行 · 文旅卡" onClose={vi.fn()} />);
+    expect(await screen.findByText('还差 3 笔')).toBeTruthy();
+    expect(screen.getByText('账单估算 7 笔')).toBeTruthy();
+    expect(screen.getByText(/达标后次月返现 1%，最高/)).toBeTruthy();
+    expect(screen.getByText('最近一笔已导入交易 2026-11-20')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '确认笔数' }));
+    fireEvent.change(screen.getByRole('spinbutton', { name: '2026-11 银行确认笔数' }), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(`/api/cards/2/spend-progress/${countRule.id}`, { periodKey: key, count: 9 }));
   });
 });

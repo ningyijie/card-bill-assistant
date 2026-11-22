@@ -253,6 +253,25 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
     expect(prisma.cardSpendConfirmation.deleteMany).toHaveBeenCalledWith({ where: { cardId: 2, ruleId: rule.id, periodKey } });
   });
 
+  it('笔数规则保存单卡的银行确认笔数，拒绝小数和金额单位', async () => {
+    const month = periodOf(today());
+    const rule = { id: 'bbbbbbbbbbbbbbbbbbbbbbbb', name: '文旅卡返现', basis: 'calendar_month', start: month,
+      currency: 'CNY', metric: 'count', count: 10, cashback: { rate: 1, cap: 100 } };
+    const periodKey = `calendar_month:${month}:count`;
+    prisma.card.findUnique.mockResolvedValue(existingCard({ annualFeePolicy: { spendRules: [rule] } }));
+    await withServer(async (url) => {
+      const confirm = (fields: { amount?: number; count?: number }) => fetch(`${url}/api/cards/2/spend-progress/${rule.id}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ periodKey, ...fields }),
+      });
+      expect((await confirm({ count: 7.5 })).status).toBe(400);
+      expect((await confirm({ amount: 8 })).status).toBe(400);
+      expect((await confirm({ count: 8 })).status).toBe(200);
+    });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledWith(expect.any(Array), 2, rule.id, periodKey, 8, 8);
+  });
+
   it('改状态为冻结触发 recomputePrimary（主卡让位）', async () => {
     await withServer(async (url) => {
       const res = await fetch(`${url}/api/cards/2`, {

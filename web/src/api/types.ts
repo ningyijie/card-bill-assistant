@@ -145,16 +145,21 @@ export interface AnnualFeeTrackingRow {
 
 export type CardSpendBasis = 'statement_month' | 'calendar_month' | 'date_range';
 
-export interface CardSpendRule {
+export interface CardSpendRuleFields {
   id: string;
   name: string;
   basis: CardSpendBasis;
-  amount: number;
   currency: string;
   start: string;
   end?: string;
   consecutive?: number;
+  cashback?: { rate: number; cap: number };
 }
+
+export type CardSpendRule = CardSpendRuleFields & (
+  | { metric?: 'amount'; amount: number }
+  | { metric: 'count'; count: number }
+);
 
 export interface CardSpendProgress {
   rule: CardSpendRule;
@@ -167,6 +172,9 @@ export interface CardSpendProgress {
     endsOn: string;
     bankAmount: number | null;
     estimatedAmount: number | null;
+    bankCount?: number | null;
+    estimatedCount?: number | null;
+    lastTransactionOn?: string | null;
     remaining: number | null;
     canConfirm: boolean;
   }[];

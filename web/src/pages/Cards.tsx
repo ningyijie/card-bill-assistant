@@ -516,7 +516,7 @@ function CardForm({
           )}
         </Col>
         <Col span={24}>
-          <h3 className="cards-edit-section-title">年费与减免（均可选）</h3>
+          <h3 className="cards-edit-section-title">年费与消费跟踪（均可选）</h3>
           <Form.Item name="annualFeePolicy" rules={[{ validator: validateAnnualFeePolicy }]}>
             <CardAnnualFeeFields />
           </Form.Item>

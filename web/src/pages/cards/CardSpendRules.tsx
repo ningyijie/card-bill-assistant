@@ -1,6 +1,6 @@
-import { Button, Card, Col, DatePicker, Flex, Form, Input, InputNumber, Row, Select } from 'antd';
+import { Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, InputNumber, Row, Select } from 'antd';
 import dayjs from 'dayjs';
-import type { CardSpendBasis, CardSpendRule } from '../../api/types';
+import type { CardSpendBasis, CardSpendRule, CardSpendRuleFields } from '../../api/types';
 
 export const spendBasisLabels: Record<CardSpendBasis, string> = {
   statement_month: '账单月',
@@ -23,8 +23,20 @@ export function CardSpendRules({ rules, currency, onChange }: {
   return (
     <Flex vertical gap={12}>
       {rules.map((rule) => {
-        const update = (patch: Partial<CardSpendRule>) =>
-          onChange(rules.map((item) => item.id === rule.id ? { ...item, ...patch } : item));
+        const replaceRule = (next: CardSpendRule) => onChange(rules.map((item) => item.id === rule.id ? next : item));
+        const update = (patch: Partial<CardSpendRuleFields>) => replaceRule({ ...rule, ...patch });
+        const byCount = rule.metric === 'count';
+        const target = byCount ? rule.count : rule.amount;
+        const cashback = rule.cashback;
+        const changeMetric = (metric: 'amount' | 'count') => {
+          if (metric === 'count' && rule.metric !== 'count') {
+            const { amount, ...fields } = rule;
+            replaceRule({ ...fields, currency: /^[A-Z]{3}$/.test(rule.currency) ? rule.currency : 'CNY', metric, count: 0 });
+          } else if (metric === 'amount' && rule.metric === 'count') {
+            const { count, ...fields } = rule;
+            replaceRule({ ...fields, metric, amount: 0 });
+          }
+        };
         const range = rule.basis === 'date_range';
         const format = range ? 'YYYY-MM-DD' : 'YYYY-MM';
         return (
@@ -47,21 +59,31 @@ export function CardSpendRules({ rules, currency, onChange }: {
                     })} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={range ? 16 : 10}>
-                <Form.Item label={range ? '目标消费金额' : '每期目标金额'} htmlFor={`amount-${rule.id}`} required>
-                  <InputNumber id={`amount-${rule.id}`} min={0.01} max={999_999_999.99} precision={2}
-                    style={{ width: '100%' }} value={rule.amount || null}
-                    onChange={(amount) => update({ amount: amount ?? 0 })} />
+              <Col xs={12} sm={6}>
+                <Form.Item label="统计方式" htmlFor={`metric-${rule.id}`} required>
+                  <Select id={`metric-${rule.id}`} value={rule.metric ?? 'amount'}
+                    options={[{ value: 'amount', label: '消费金额' }, { value: 'count', label: '消费笔数' }]}
+                    onChange={changeMetric} />
                 </Form.Item>
               </Col>
-              <Col xs={12} sm={range ? 8 : 6}>
-                <Form.Item label="统计币种" htmlFor={`currency-${rule.id}`} required>
-                  <Input id={`currency-${rule.id}`} value={rule.currency} maxLength={3}
-                    onChange={(event) => update({ currency: event.target.value.toUpperCase() })} />
+              <Col xs={12} sm={6}>
+                <Form.Item label={byCount ? '目标消费笔数' : range ? '目标消费金额' : '每期目标金额'} htmlFor={`amount-${rule.id}`} required>
+                  <InputNumber id={`amount-${rule.id}`} min={byCount ? 1 : 0.01}
+                    max={byCount ? 100_000 : 999_999_999.99} precision={byCount ? 0 : 2} suffix={byCount ? '笔' : undefined}
+                    style={{ width: '100%' }} value={target || null}
+                    onChange={(value) => replaceRule(byCount ? { ...rule, count: value ?? 0 } : { ...rule, amount: value ?? 0 })} />
                 </Form.Item>
               </Col>
+              {(!byCount || cashback) && (
+                <Col xs={12} sm={6}>
+                  <Form.Item label={byCount ? '返现币种' : '统计币种'} htmlFor={`currency-${rule.id}`} required>
+                    <Input id={`currency-${rule.id}`} value={rule.currency} maxLength={3}
+                      onChange={(event) => update({ currency: event.target.value.toUpperCase() })} />
+                  </Form.Item>
+                </Col>
+              )}
               {!range && (
-                <Col xs={24} sm={8}>
+                <Col xs={12} sm={6}>
                   <Form.Item label="连续达标期数" htmlFor={`consecutive-${rule.id}`}>
                     <InputNumber id={`consecutive-${rule.id}`} min={1} max={24} precision={0}
                       style={{ width: '100%' }} value={rule.consecutive ?? 1}
@@ -84,6 +106,32 @@ export function CardSpendRules({ rules, currency, onChange }: {
                     onChange={(date) => update({ end: date?.format(format) })} />
                 </Form.Item>
               </Col>
+              <Col span={24}>
+                <Form.Item>
+                  <Checkbox checked={Boolean(cashback)} onChange={(event) => update({
+                    cashback: event.target.checked ? { rate: 0, cap: 0 } : undefined,
+                    ...(byCount && !/^[A-Z]{3}$/.test(rule.currency) ? { currency: 'CNY' } : {}),
+                  })}>记录达标后的次月返现</Checkbox>
+                </Form.Item>
+              </Col>
+              {cashback && (
+                <>
+                  <Col xs={12}>
+                    <Form.Item label="次月返现比例" htmlFor={`cashback-rate-${rule.id}`} required>
+                      <InputNumber id={`cashback-rate-${rule.id}`} min={0.01} max={100} precision={2} suffix="%"
+                        style={{ width: '100%' }} value={cashback.rate || null}
+                        onChange={(rate) => update({ cashback: { ...cashback, rate: rate ?? 0 } })} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12}>
+                    <Form.Item label="次月返现上限" htmlFor={`cashback-cap-${rule.id}`} required>
+                      <InputNumber id={`cashback-cap-${rule.id}`} min={0.01} max={999_999_999.99} precision={2} suffix={rule.currency}
+                        style={{ width: '100%' }} value={cashback.cap || null}
+                        onChange={(cap) => update({ cashback: { ...cashback, cap: cap ?? 0 } })} />
+                    </Form.Item>
+                  </Col>
+                </>
+              )}
             </Row>
           </Card>
         );

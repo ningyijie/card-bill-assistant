@@ -63,6 +63,31 @@ describe('消费达标跟踪', () => {
     expect(readSpendRules({ amount: 680 })).toEqual([]);
   });
 
+  it('按交易日在自然月估算笔数，显示最近导入日期，并保留独立的银行确认', () => {
+    const rule = {
+      id: base.id, name: '文旅卡返现', basis: 'calendar_month', start: '2026-01', currency: 'CNY',
+      metric: 'count', count: 10, cashback: { rate: 1, cap: 100 },
+    };
+    const rules = readSpendRules({ spendRules: [rule] });
+    expect(rules[0]).toMatchObject(rule);
+    expect(readSpendRules({ spendRules: [{ ...rule, count: 9.5 }] })).toEqual([]);
+    const [progress] = buildSpendProgress(rules, [
+      transaction(1, '2026-01-31', '2026-02'),
+      transaction(2, '2026-01-31', '2026-02'),
+      transaction(-1, '2026-01-31', '2026-02', { description: '原交易退款' }),
+      transaction(500, '2026-02-01', '2026-02', { description: '年费' }),
+      transaction(10, '2026-02-01', '2026-02', { currency: 'USD' }),
+    ], [
+      { ruleId: rule.id, periodKey: 'calendar_month:2026-01:CNY', amount: 5000 },
+      { ruleId: rule.id, periodKey: 'calendar_month:2026-02:count', amount: 8 },
+    ], now, 26, new Map());
+    expect(progress.periods[0]).toMatchObject({
+      label: '2026-01', bankCount: null, estimatedCount: 2, remaining: 8, lastTransactionOn: '2026-01-31',
+    });
+    expect(progress.periods[1]).toMatchObject({ label: '2026-02', bankCount: 8, estimatedCount: 1, remaining: 2 });
+    expect(progress.periods[2]).toMatchObject({ label: '2026-03', bankCount: null, estimatedCount: null, remaining: null });
+  });
+
   it.each(['statement_month', 'calendar_month'] as const)('年费使用 %s 时，银行确认达标或积分足够即满足任一条件', (basis) => {
     const rule: SpendRule = { ...statementRule, basis, consecutive: 2 };
     const progress = buildSpendProgress([rule], [], [

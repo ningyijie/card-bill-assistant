@@ -7,28 +7,39 @@ export const spendAmountSchema = z.number().nonnegative().max(999_999_999.99)
   .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 0.0001, '金额最多两位小数');
 export const spendRuleIdSchema = z.string().regex(/^[a-f0-9]{24}$/);
 export const annualFeeWaivers = ['none', 'count', 'points', 'either', 'spend', 'spend_or_points', 'other'] as const;
-const amountFields = {
+export const spendCountSchema = z.number().int().min(0).max(100_000);
+const positiveAmount = spendAmountSchema.refine((value) => value >= 0.01, '目标金额至少为 0.01');
+const ruleFields = {
   id: spendRuleIdSchema,
   name: z.string().trim().min(1, '请填写跟踪名称').max(48),
   currency: z.string().regex(/^[A-Z]{3}$/, '请输入三位币种代码'),
-  amount: spendAmountSchema.refine((value) => value >= 0.01, '目标金额至少为 0.01'),
+  cashback: z.object({
+    rate: positiveAmount.refine((value) => value <= 100, '返现比例不能超过 100%'),
+    cap: positiveAmount,
+  }).optional(),
 };
 
-const spendRuleSchema = z.discriminatedUnion('basis', [
+const spendRulePeriod = z.discriminatedUnion('basis', [
   z.object({
-    ...amountFields,
+    ...ruleFields,
     basis: z.enum(['statement_month', 'calendar_month']),
     start: monthSchema,
     end: monthSchema.optional(),
     consecutive: z.number().int().min(1).max(24).default(1),
   }),
   z.object({
-    ...amountFields,
+    ...ruleFields,
     basis: z.literal('date_range'),
     start: spendDateSchema,
     end: spendDateSchema,
   }),
-]).refine((rule) => !rule.end || rule.end >= rule.start, '截止时间不能早于开始时间');
+]);
+const spendRuleTarget = z.union([
+  z.object({ metric: z.literal('amount').optional(), amount: positiveAmount }),
+  z.object({ metric: z.literal('count'), count: spendCountSchema.min(1) }),
+]);
+const spendRuleSchema = z.intersection(spendRulePeriod, spendRuleTarget)
+  .refine((rule) => !rule.end || rule.end >= rule.start, '截止时间不能早于开始时间');
 
 export const spendRulesSchema = z.array(spendRuleSchema).max(12)
   .refine((rules) => new Set(rules.map((rule) => rule.id)).size === rules.length, '消费跟踪规则不能重复');
@@ -71,8 +82,10 @@ export function spendPeriods(
   statementDay: number,
   statementDates: ReadonlyMap<string, Date>,
 ): SpendPeriod[] {
+  // 确认金额和确认笔数各自保留，切换统计方式时不会误用之前的数值。
+  const scope = rule.metric === 'count' ? 'count' : rule.currency;
   if (rule.basis === 'date_range') {
-    return [{ key: `range:${rule.start}:${rule.end}:${rule.currency}`, label: `${rule.start} 至 ${rule.end}`,
+    return [{ key: `range:${rule.start}:${rule.end}:${scope}`, label: `${rule.start} 至 ${rule.end}`,
       startsOn: rule.start, endsOn: rule.end }];
   }
   const statementEnd = (period: string) => statementDates.get(period) ?? monthEnd(period, statementDay);
@@ -85,7 +98,7 @@ export function spendPeriods(
   const periods: SpendPeriod[] = [];
   for (let month = rule.start; month <= last; month = monthOffset(month, 1)) {
     periods.push({
-      key: `${rule.basis}:${month}:${rule.currency}`,
+      key: `${rule.basis}:${month}:${scope}`,
       label: month,
       startsOn: statement ? ymd(addDays(statementEnd(monthOffset(month, -1)), 1)) : `${month}-01`,
       endsOn: ymd(statement ? statementEnd(month) : monthEnd(month, 31)),
@@ -104,6 +117,20 @@ function estimatedCents(transaction: SpendTransaction): number {
   return 0;
 }
 
+interface SpendTotal {
+  cents: number;
+  count: number;
+  latestOn: string | null;
+}
+
+function addTotal(totals: Map<string, SpendTotal>, key: string, cents: number, date: string | null) {
+  const current = totals.get(key) ?? { cents: 0, count: 0, latestOn: null };
+  current.cents += cents;
+  if (cents > 0) current.count++;
+  if (date && (!current.latestOn || current.latestOn < date)) current.latestOn = date;
+  totals.set(key, current);
+}
+
 export function buildSpendProgress(
   rules: SpendRule[],
   transactions: SpendTransaction[],
@@ -113,22 +140,23 @@ export function buildSpendProgress(
   statementDates: ReadonlyMap<string, Date>,
 ) {
   const confirmationByKey = new Map(confirmations.map((row) => [`${row.ruleId}:${row.periodKey}`, row.amount]));
-  const estimatesByMonth = new Map<string, number>();
-  const totalsByDate = new Map<string, Map<string, number>>();
+  const estimatesByMonth = new Map<string, SpendTotal>();
+  const totalsByDate = new Map<string, Map<string, SpendTotal>>();
   const todayText = ymd(now);
   for (const transaction of transactions) {
     const cents = estimatedCents(transaction);
-    if (transaction.statementPeriod) {
-      const key = `statement_month:${transaction.statementPeriod}:${transaction.currency}`;
-      estimatesByMonth.set(key, (estimatesByMonth.get(key) ?? 0) + cents);
-    }
-    if (transaction.transactionDate) {
-      const date = ymd(transaction.transactionDate);
-      const key = `calendar_month:${date.slice(0, 7)}:${transaction.currency}`;
-      estimatesByMonth.set(key, (estimatesByMonth.get(key) ?? 0) + cents);
-      const totals = totalsByDate.get(transaction.currency) ?? new Map<string, number>();
-      totals.set(date, (totals.get(date) ?? 0) + cents);
-      totalsByDate.set(transaction.currency, totals);
+    const date = transaction.transactionDate ? ymd(transaction.transactionDate) : null;
+    // 金额按入账币种分开，笔数按本卡全部已导入的消费累计。
+    for (const scope of [transaction.currency, 'count']) {
+      if (transaction.statementPeriod) {
+        addTotal(estimatesByMonth, `statement_month:${transaction.statementPeriod}:${scope}`, cents, date);
+      }
+      if (date) {
+        addTotal(estimatesByMonth, `calendar_month:${date.slice(0, 7)}:${scope}`, cents, date);
+        const totals = totalsByDate.get(scope) ?? new Map<string, SpendTotal>();
+        addTotal(totals, date, cents, date);
+        totalsByDate.set(scope, totals);
+      }
     }
   }
 
@@ -137,25 +165,33 @@ export function buildSpendProgress(
     let estimatedRun = 0;
     let bankStreak = 0;
     let estimatedStreak = 0;
-    const target = Math.round(rule.amount * 100);
+    const byCount = rule.metric === 'count';
+    const target = byCount ? rule.count : Math.round(rule.amount * 100);
     const periods = spendPeriods(rule, now, statementDay, statementDates).map((period) => {
-      const bankAmount = confirmationByKey.get(`${rule.id}:${period.key}`) ?? null;
+      const confirmed = confirmationByKey.get(`${rule.id}:${period.key}`) ?? null;
       let estimate = estimatesByMonth.get(period.key);
       if (rule.basis === 'date_range') {
-        for (const [date, cents] of totalsByDate.get(rule.currency) ?? []) {
-          if (date >= rule.start && date <= rule.end) estimate = (estimate ?? 0) + cents;
+        for (const [date, total] of totalsByDate.get(byCount ? 'count' : rule.currency) ?? []) {
+          if (date < rule.start || date > rule.end) continue;
+          const aggregate = estimate ??= { cents: 0, count: 0, latestOn: null };
+          aggregate.cents += total.cents;
+          aggregate.count += total.count;
+          if (!aggregate.latestOn || aggregate.latestOn < date) aggregate.latestOn = date;
         }
       }
-      const estimatedAmount = estimate === undefined ? null : Math.max(0, estimate) / 100;
-      const amount = bankAmount ?? estimatedAmount;
-      const cents = amount === null ? null : Math.round(amount * 100);
-      const met = cents !== null && cents >= target;
-      bankRun = met && bankAmount !== null ? bankRun + 1 : 0;
+      const units = confirmed === null
+        ? estimate === undefined ? null : byCount ? estimate.count : Math.max(0, estimate.cents)
+        : byCount ? confirmed : Math.round(confirmed * 100);
+      const met = units !== null && units >= target;
+      bankRun = met && confirmed !== null ? bankRun + 1 : 0;
       estimatedRun = met ? estimatedRun + 1 : 0;
       bankStreak = Math.max(bankStreak, bankRun);
       estimatedStreak = Math.max(estimatedStreak, estimatedRun);
-      return { ...period, bankAmount, estimatedAmount,
-        remaining: cents === null ? null : Math.max(0, target - cents) / 100,
+      return { ...period,
+        bankAmount: byCount ? null : confirmed,
+        estimatedAmount: !byCount && estimate ? Math.max(0, estimate.cents) / 100 : null,
+        ...(byCount ? { bankCount: confirmed, estimatedCount: estimate?.count ?? null, lastTransactionOn: estimate?.latestOn ?? null } : {}),
+        remaining: units === null ? null : Math.max(0, target - units) / (byCount ? 1 : 100),
         canConfirm: period.startsOn <= todayText };
     });
     return { rule, periods, bankStreak, estimatedStreak };

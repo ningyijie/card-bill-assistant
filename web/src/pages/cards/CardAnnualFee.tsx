@@ -31,9 +31,13 @@ export const annualFeeSettlementLabels: Record<AnnualFeeSettlement, string> = {
 export async function validateAnnualFeePolicy(_: unknown, policy?: CardAnnualFeePolicy | null) {
   if (policy?.currency && !/^[A-Z]{3}$/.test(policy.currency)) throw new Error('币种应为 3 位字母，如 CNY');
   for (const rule of policy?.spendRules ?? []) {
-    if (!rule.name.trim() || !rule.start || rule.amount < 0.01 || !/^[A-Z]{3}$/.test(rule.currency)
+    const validTarget = rule.metric === 'count' ? Number.isInteger(rule.count) && rule.count > 0 : rule.amount >= 0.01;
+    if (!rule.name.trim() || !rule.start || !validTarget || !/^[A-Z]{3}$/.test(rule.currency)
       || (rule.basis === 'date_range' && !rule.end)) {
-      throw new Error('请填写消费跟踪规则的名称、金额、币种和统计时间');
+      throw new Error('请填写消费跟踪规则的名称、消费目标、币种和统计时间');
+    }
+    if (rule.cashback && (rule.cashback.rate < 0.01 || rule.cashback.rate > 100 || rule.cashback.cap < 0.01)) {
+      throw new Error('请填写有效的返现比例和返现上限');
     }
     if (rule.end && rule.end < rule.start) throw new Error('消费跟踪的截止时间不能早于开始时间');
   }
