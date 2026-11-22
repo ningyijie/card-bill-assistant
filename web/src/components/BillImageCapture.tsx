@@ -6,7 +6,8 @@ import { notifyDataChanged } from '../lib/dataChanged';
 import { cardDisplayLabel } from '../lib/cardDisplay';
 import './bill-image-capture.css';
 
-interface Transaction { date: string; description: string; amount: number }
+interface Transaction { date: string; description: string; amount: number; tail?: string; cardId?: number }
+type ImportKind = 'bill' | 'unbilled';
 interface CapturePage {
   index: number;
   name: string;
@@ -15,11 +16,13 @@ interface CapturePage {
     amount: number; minAmount: number;
   }>;
   transactions: Transaction[];
+  unbilled?: true;
   duplicateOf?: number;
   error?: string;
 }
 interface Capture { status: 'processing' | 'ready'; total: number; pages: CapturePage[] }
 interface DraftValues {
+  kind?: ImportKind;
   cardId?: number;
   statementDate?: string;
   dueDate?: string;
@@ -34,33 +37,39 @@ function common<T extends string | number>(values: (T | undefined)[]): T | undef
   return known.length === 1 ? known[0] : undefined;
 }
 
+function matchingCard(cards: CardRow[], tail?: string, bankName?: string) {
+  if (!tail) return undefined;
+  const matches = cards.filter((card) =>
+    (card.cardLast4 === tail || card.displayLast4 === tail)
+    && (!bankName || card.bankName.replace(/^中国/, '') === bankName.replace(/^中国/, '')),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function createDrafts(pages: CapturePage[], cards: CardRow[]) {
-  const groups = new Map<string, { cardId?: number; pages: CapturePage[] }>();
+  const groups = new Map<string, { kind: ImportKind; cardId?: number; pages: CapturePage[] }>();
   for (const page of pages) {
     if (page.duplicateOf !== undefined) continue;
-    const tail = page.fields.tail;
-    const matches = tail ? cards.filter((card) =>
-      (card.cardLast4 === tail || card.displayLast4 === tail)
-      && (!page.fields.bankName || card.bankName.replace(/^中国/, '') === page.fields.bankName.replace(/^中国/, '')),
-    ) : [];
-    const cardId = matches.length === 1 ? matches[0].id : undefined;
+    const cardId = matchingCard(cards, page.fields.tail, page.fields.bankName)?.id;
     const { period, currency } = page.fields;
-    const key = cardId && period && currency ? `${cardId}:${period}:${currency}` : `page:${page.index}`;
-    const group = groups.get(key) ?? { cardId, pages: [] };
+    const kind = page.unbilled ? 'unbilled' : 'bill';
+    const key = kind === 'unbilled' ? `unbilled:${currency ?? ''}`
+      : cardId && period && currency ? `${cardId}:${period}:${currency}` : `page:${page.index}`;
+    const group = groups.get(key) ?? { kind, cardId, pages: [] };
     group.pages.push(page);
     groups.set(key, group);
   }
   return [...groups.entries()].map(([key, group]) => {
     const fields = group.pages.map((page) => page.fields);
     return {
-      key, indexes: group.pages.map((page) => page.index),
+      key, kind: group.kind, indexes: group.pages.map((page) => page.index),
       fields: {
-        cardId: group.cardId,
+        cardId: group.kind === 'bill' ? group.cardId : undefined,
         statementDate: common(fields.map((row) => row.statementDate)),
         dueDate: common(fields.map((row) => row.dueDate)),
         amount: common(fields.map((row) => row.amount)),
         minAmount: common(fields.map((row) => row.minAmount)),
-        currency: common(fields.map((row) => row.currency)),
+        currency: common(fields.map((row) => row.currency)) ?? (group.kind === 'unbilled' ? 'CNY' : undefined),
       },
     };
   });
@@ -76,14 +85,17 @@ function screenshotDateKey(date: string, statementDate?: string) {
   return candidate <= statementDate ? candidate : `${year - 1}-${suffix}`;
 }
 
-function suggestedTransactions(pages: CapturePage[], statementDate?: string) {
+function suggestedTransactions(pages: CapturePage[], cards: CardRow[], kind: ImportKind, statementDate?: string) {
   const transactions: Transaction[] = [];
   const counts = new Map<string, number>();
   let overlaps = 0;
   for (const page of pages) {
     const pageCounts = new Map<string, number>();
     for (const row of page.transactions) {
+      const tail = row.tail ?? (kind === 'unbilled' ? page.fields.tail : undefined);
+      const cardId = matchingCard(cards, tail, page.fields.bankName)?.id;
       const key = JSON.stringify([
+        cardId ?? (tail ? [page.fields.bankName, tail] : kind === 'unbilled' ? page.index : null),
         screenshotDateKey(row.date, statementDate),
         row.description.normalize('NFKC').replace(/\s/g, '').toLowerCase(),
         Math.round(row.amount * 100),
@@ -92,7 +104,7 @@ function suggestedTransactions(pages: CapturePage[], statementDate?: string) {
       pageCounts.set(key, count);
       if (count <= (counts.get(key) ?? 0)) { overlaps++; continue; }
       counts.set(key, count);
-      transactions.push(row);
+      transactions.push({ ...row, tail, cardId });
     }
   }
   return { transactions, overlaps };
@@ -104,7 +116,13 @@ function DraftReview({ id, draft, pages, cards }: {
   const [form] = Form.useForm<DraftValues>();
   const [indexes, setIndexes] = useState(draft.indexes);
   const selected = pages.filter((page) => indexes.includes(page.index));
-  const startingRows = suggestedTransactions(selected, draft.fields.statementDate);
+  const kind = Form.useWatch('kind', form) ?? draft.kind;
+  const ownerCardId = Form.useWatch('cardId', form);
+  const ownerBank = cards.find((card) => card.id === ownerCardId)?.bankName;
+  const unbilled = kind === 'unbilled';
+  const startingRows = suggestedTransactions(selected, cards, kind, draft.fields.statementDate);
+  const transactionCount = Form.useWatch((values: DraftValues) => values.transactions?.length, form)
+    ?? startingRows.transactions.length;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string>();
   const [error, setError] = useState('');
@@ -116,12 +134,24 @@ function DraftReview({ id, draft, pages, cards }: {
     setSaving(true);
     setError('');
     try {
-      const result = await api.post<{ status: 'created' | 'merged' | 'official'; duplicateTransactions?: number }>(
-        `/api/bill-images/${id}/bills`, { ...values, minAmount: values.minAmount ?? null, transactions: values.transactions ?? [] },
-      );
-      setSaved(result.status === 'official' ? '已存在正式账单，跳过这份截图'
-        : result.status === 'merged' ? `已合入现有账单，跳过 ${result.duplicateTransactions ?? 0} 笔重复明细` : '已保存截图账单');
-      if (result.status !== 'official') notifyDataChanged();
+      const { kind: importKind, transactions: rows = [], currency, cardId, statementDate, dueDate, amount, minAmount } = values;
+      const transactions = rows.map(({ date, description, amount: value, cardId: transactionCardId }) => ({
+        date, description, amount: value, ...(transactionCardId != null ? { cardId: transactionCardId } : {}),
+      }));
+      if (importKind === 'unbilled') {
+        const result = await api.post<{ added: number; duplicates: number }>(
+          `/api/bill-images/${id}/transactions`, { currency, transactions },
+        );
+        setSaved(`已保存 ${result.added} 笔未出账交易，跳过 ${result.duplicates} 笔重复明细`);
+        if (result.added > 0) notifyDataChanged();
+      } else {
+        const result = await api.post<{ status: 'created' | 'merged' | 'official'; duplicateTransactions?: number }>(
+          `/api/bill-images/${id}/bills`, { cardId, currency, statementDate, dueDate, amount, minAmount: minAmount ?? null, transactions },
+        );
+        setSaved(result.status === 'official' ? '已存在正式账单，跳过这份截图'
+          : result.status === 'merged' ? `已合入现有账单，跳过 ${result.duplicateTransactions ?? 0} 笔重复明细` : '已保存截图账单');
+        if (result.status !== 'official') notifyDataChanged();
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败');
     } finally {
@@ -131,48 +161,70 @@ function DraftReview({ id, draft, pages, cards }: {
   }
 
   const dateRules = [{ required: true, message: '请填写日期' }, { pattern: /^\d{4}-\d{2}-\d{2}$/, message: '请用 YYYY-MM-DD' }];
+  const cardOptions = (unbilled || !ownerBank ? cards : cards.filter((card) => card.bankName === ownerBank))
+    .map((card) => ({ value: card.id, label: cardDisplayLabel(card) }));
   return (
     <Card size="small" title={`截图 ${draft.indexes.join('、')}`}>
       {saved ? <Alert type="success" title={saved} /> : (
         <Form<DraftValues> form={form} layout="vertical" disabled={saving}
-          initialValues={{ ...draft.fields, transactions: startingRows.transactions }} onFinish={(values) => void save(values)}>
+          initialValues={{ ...draft.fields, kind: draft.kind, transactions: startingRows.transactions }} onFinish={(values) => void save(values)}>
           <Form.Item label="合入这份账单的截图" htmlFor={`capture-${draft.key}`} extra="更改所选截图会重新填入交易明细。">
             <Select id={`capture-${draft.key}`} mode="multiple" value={indexes}
-              options={pages.filter((page) => page.duplicateOf === undefined).map((page) => ({
+              options={pages.filter((page) => page.duplicateOf === undefined && Boolean(page.unbilled) === (draft.kind === 'unbilled')).map((page) => ({
                 value: page.index, label: `第 ${page.index} 张 · ${page.name}`,
               }))}
               onChange={(values: number[]) => {
                 setIndexes(values);
                 const transactions = suggestedTransactions(
-                  pages.filter((page) => values.includes(page.index)), form.getFieldValue('statementDate'),
+                  pages.filter((page) => values.includes(page.index)), cards, kind, form.getFieldValue('statementDate'),
                 ).transactions;
                 form.setFieldValue('transactions', transactions);
               }} />
           </Form.Item>
           <div className="capture-draft-fields">
-            <Form.Item name="cardId" label="卡片" rules={[{ required: true, message: '请选择卡片' }]}>
+            <Form.Item name="kind" label="导入类型">
+              <Select options={[{ value: 'bill', label: '正式账单' }, { value: 'unbilled', label: '未出账交易' }]}
+                onChange={(next: ImportKind) => {
+                  // 保留用户已编辑的交易，只为未选择卡片的行补充截图能够唯一识别的卡。
+                  const suggestions = suggestedTransactions(selected, cards, next, form.getFieldValue('statementDate')).transactions;
+                  const rows = form.getFieldValue('transactions') as Transaction[] | undefined;
+                  if (next === 'unbilled' && !form.getFieldValue('currency')) form.setFieldValue('currency', 'CNY');
+                  if (rows?.length === suggestions.length) form.setFieldValue('transactions', rows.map((row, index) => {
+                    const suggested = suggestions[index];
+                    if (row.cardId != null || row.date !== suggested.date || row.description !== suggested.description
+                      || row.amount !== suggested.amount) return row;
+                    return { ...row, tail: row.tail ?? suggested.tail, cardId: suggested.cardId };
+                  }));
+                }} />
+            </Form.Item>
+            {!unbilled && <Form.Item name="cardId" label="账单归属卡" rules={[{ required: true, message: '请选择账单归属卡' }]}>
               <Select showSearch optionFilterProp="label" options={cards.map((card) => ({
                 value: card.id, label: cardDisplayLabel(card),
               }))} />
-            </Form.Item>
+            </Form.Item>}
             <Form.Item name="currency" label="币种" rules={[{ required: true }, { pattern: /^[a-z]{3}$/i, message: '填写三位币种代码' }]}>
               <Input maxLength={3} placeholder="CNY" />
             </Form.Item>
+            {!unbilled && <>
             <Form.Item name="statementDate" label="出账日" rules={dateRules}><Input placeholder="YYYY-MM-DD" /></Form.Item>
             <Form.Item name="dueDate" label="还款日" rules={dateRules}><Input placeholder="YYYY-MM-DD" /></Form.Item>
             <Form.Item name="amount" label="本期应还金额" rules={[{ required: true, message: '请填写应还金额' }]}>
               <InputNumber style={{ width: '100%' }} precision={2} />
             </Form.Item>
             <Form.Item name="minAmount" label="最低还款额"><InputNumber min={0} style={{ width: '100%' }} precision={2} /></Form.Item>
+            </>}
           </div>
+          {unbilled && <Typography.Paragraph type="secondary">
+            核对每笔交易的日期和卡片。截图底部被遮挡的交易可以补拍，也可以手动添加。
+          </Typography.Paragraph>}
           <Form.List name="transactions">
             {(rows, { add, remove }) => (
-              <Collapse size="small" items={[{
+              <Collapse size="small" defaultActiveKey={draft.kind === 'unbilled' ? ['transactions'] : []} items={[{
                 key: 'transactions', label: `交易明细（${rows.length} 笔）`, forceRender: true,
                 children: <Flex vertical gap={6}>
                   {startingRows.overlaps > 0 && <Alert type="info" title={`已折叠 ${startingRows.overlaps} 笔疑似重叠明细，请和截图核对。`} />}
                   {rows.map((row) => <div className="capture-transaction" key={row.key}>
-                    <Form.Item name={[row.name, 'date']} label="交易日期" rules={[{ required: true }]}>
+                    <Form.Item name={[row.name, 'date']} label="交易日期" rules={unbilled ? dateRules : [{ required: true }]}>
                       <Input placeholder="YYYY-MM-DD" />
                     </Form.Item>
                     <Form.Item name={[row.name, 'description']} label="商户或说明" rules={[{ required: true }]}>
@@ -182,16 +234,31 @@ function DraftReview({ id, draft, pages, cards }: {
                       <InputNumber style={{ width: '100%' }} precision={2} />
                     </Form.Item>
                     <Button size="small" onClick={() => remove(row.name)}>移除</Button>
+                    <Form.Item noStyle shouldUpdate={(before, after) =>
+                      before.transactions?.[row.name]?.tail !== after.transactions?.[row.name]?.tail}>
+                      {() => {
+                        const tail = form.getFieldValue(['transactions', row.name, 'tail']) as string | undefined;
+                        return <Form.Item className="capture-transaction-card" name={[row.name, 'cardId']}
+                          label={tail ? `交易卡片（截图尾号 ${tail}）` : '交易卡片'}
+                          rules={unbilled || tail ? [{ required: true, message: '请核对该笔交易的卡片' }] : []}>
+                          <Select showSearch optionFilterProp="label" options={cardOptions} allowClear={!unbilled && !tail}
+                            placeholder={unbilled || tail ? '选择交易卡片' : '沿用账单归属卡'} />
+                        </Form.Item>;
+                      }}
+                    </Form.Item>
                   </div>)}
                   <Space wrap><Button size="small" onClick={() => add()}>添加一笔</Button>
-                    {rows.length > 0 && <Button size="small" onClick={() => remove(rows.map((row) => row.name))}>只保存账单汇总</Button>}
+                    {!unbilled && rows.length > 0 && <Button size="small" onClick={() => remove(rows.map((row) => row.name))}>只保存账单汇总</Button>}
                   </Space>
                 </Flex>,
               }]} />
             )}
           </Form.List>
           {error && <Alert type="error" title={error} />}
-          <Button style={{ marginTop: 12 }} type="primary" htmlType="submit" loading={saving}>保存这份账单</Button>
+          <Button style={{ marginTop: 12 }} type="primary" htmlType="submit" loading={saving}
+            disabled={unbilled && transactionCount === 0}>
+            {unbilled ? '保存未出账交易' : '保存这份账单'}
+          </Button>
         </Form>
       )}
     </Card>

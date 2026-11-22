@@ -46,4 +46,25 @@ describe('截图导入', () => {
       minAmount: null, transactions: [transaction],
     }));
   });
+
+  it('未出账截图按交易卡尾分配，多卡无需填写账单日期或选择归属卡', async () => {
+    const second = { id: 8, cardLast4: '2222', displayLast4: '2222', bankName: '测试银行' } as CardRow;
+    const transaction = { date: '2026-11-19', description: '测试商户', amount: 10 };
+    vi.spyOn(api, 'get').mockResolvedValue({
+      status: 'ready', total: 1, pages: [{
+        index: 1, name: 'unbilled.png', fields: {}, unbilled: true,
+        transactions: [{ ...transaction, tail: '1083' }, { ...transaction, tail: '2222' }],
+      }],
+    });
+    const save = vi.spyOn(api, 'post').mockResolvedValue({ added: 2, duplicates: 0 });
+    render(<App><BillImageCapture id="capture-2" cards={[...cards, second]} onCapture={vi.fn()} onClose={vi.fn()} /></App>);
+    const button = await screen.findByRole('button', { name: '保存未出账交易' });
+    expect(screen.queryByLabelText('出账日')).toBeNull();
+    expect(screen.queryByLabelText('还款日')).toBeNull();
+    expect(screen.queryByLabelText('账单归属卡')).toBeNull();
+    fireEvent.click(button);
+    await waitFor(() => expect(save).toHaveBeenCalledWith('/api/bill-images/capture-2/transactions', {
+      currency: 'CNY', transactions: [{ ...transaction, cardId: 7 }, { ...transaction, cardId: 8 }],
+    }));
+  });
 });

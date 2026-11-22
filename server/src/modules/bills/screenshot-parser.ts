@@ -4,6 +4,7 @@ export interface ScreenshotTransaction {
   date: string;
   description: string;
   amount: number;
+  tail?: string;
 }
 
 export interface ScreenshotFields {
@@ -21,6 +22,7 @@ const datePattern = String.raw`(20\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d
 // OCR 偶尔把千位逗号识别成小数点。只接受完整数字，末尾的分隔符才是小数点。
 const moneyPattern = String.raw`([-+−]?\s*(?:[¥￥$]\s*)?(?:\d{1,3}(?:\s*[.,]\s*\d{3})+|\d+)\s*[.,]\s*\d{2})(?![\d.,]|\s*[.,]\s*\d)`;
 const shortDatePattern = String.raw`(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?!\d|\s*[-/.年月])\s*日?`;
+const tailPattern = String.raw`(?:尾号|卡片尾号|卡号后[四4]位|后[四4]位|[*•·]{2,})[\s:(]{0,8}(\d{4})(?!\d)`;
 
 function dateValue(value?: string): string | undefined {
   const m = value?.match(new RegExp(datePattern));
@@ -41,9 +43,10 @@ function unique<T>(values: (T | undefined)[]): T | undefined {
 }
 
 export function parseScreenshotText(raw: string, bankNames: readonly string[] = []): {
-  fields: ScreenshotFields; transactions: ScreenshotTransaction[];
+  fields: ScreenshotFields; transactions: ScreenshotTransaction[]; unbilled?: true;
 } {
-  const text = raw.normalize('NFKC').replace(/([\p{Script=Han}])[^\S\n]+(?=[\p{Script=Han}])/gu, '$1');
+  const text = raw.normalize('NFKC').replace(/([\p{Script=Han}])[^\S\n]+(?=[\p{Script=Han}])/gu, '$1')
+    .replace(/[–—−](?=\s*\d)/g, '-');
   const afterLabel = (label: string, expression: string) =>
     new RegExp(`(?:${label})[：:\\s]{0,12}(${expression})`, 'gi');
   const dateAfter = (label: string) =>
@@ -70,7 +73,7 @@ export function parseScreenshotText(raw: string, bankNames: readonly string[] = 
   const projectedDue = statementDate && shortDateAfter(dueLabel, Number(statementDate.slice(0, 4)), statementDate);
   const dueDate = dateAfter(dueLabel) ?? (projectedDue && statementDate &&
     fromYmd(projectedDue).getTime() - fromYmd(statementDate).getTime() <= 90 * 86400_000 ? projectedDue : undefined);
-  const tail = unique([...text.matchAll(/(?:尾号|卡片尾号|卡号后[四4]位|后[四4]位|[*•·]{2,})[\s:(]{0,8}(\d{4})(?!\d)/g)].map((match) => match[1]));
+  const tail = unique([...text.matchAll(new RegExp(tailPattern, 'g'))].map((match) => match[1]));
   const heading = text.split('\n', 5).join('\n');
   const bankName = unique(bankNames.filter((name) => heading.includes(name)));
   const currencies = [
@@ -83,22 +86,38 @@ export function parseScreenshotText(raw: string, bankNames: readonly string[] = 
   ] as const;
   const currency = unique(currencies.filter(([, pattern]) => pattern.test(text)).map(([code]) => code));
   const transactions: ScreenshotTransaction[] = [];
-  const transactionLine = new RegExp(`^\\s*(${datePattern}|(?:0?[1-9]|1[0-2])[-/.](?:[0-2]?\\d|3[01]))\\s+(.+?)\\s+${moneyPattern}\\s*(?:CNY|RMB|USD|HKD|元)?\\s*$`, 'i');
-  for (const line of text.split('\n')) {
+  const transactionLine = new RegExp(`^\\s*(${datePattern}|(?:0?[1-9]|1[0-2])[-/.](?:[0-2]?\\d|3[01]))\\s+(.+?)\\s+${moneyPattern}\\s*(?:CNY|RMB|USD|HKD|元)?(?:\\s+${tailPattern})?\\s*$`, 'i');
+  const merchantLine = new RegExp(`^(.+?)\\s+${moneyPattern}\\s*(?:[>›])?$`);
+  const metadataLine = new RegExp(`^(${datePattern})\\s+${tailPattern}\\s*(?:[>›])?$`);
+  const summaryLabel = /还款日|账单日|出账日|到期日|应还金额|最低还款/;
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  for (const [index, line] of lines.entries()) {
+    if (transactions.length >= 200) break;
+    const metadata = line.match(metadataLine);
+    const merchant = metadata ? lines[index - 1]?.match(merchantLine) : undefined;
+    if (metadata && merchant && !summaryLabel.test(merchant[1]) && !dateValue(merchant[1])) {
+      const date = dateValue(metadata[1]);
+      if (date) transactions.push({ date, description: merchant[1].slice(0, 512), amount: moneyValue(merchant[2]), tail: metadata[5] });
+      continue;
+    }
     const m = line.match(transactionLine);
-    if (!m || /还款日|账单日|出账日|到期日|应还金额|最低还款/.test(m[5])) continue;
+    if (!m || summaryLabel.test(m[5])) continue;
     const date = dateValue(m[1]) ?? m[1].replace(/[/.]/g, '-');
     const amount = moneyValue(m[6]);
-    if (Number.isFinite(amount) && m[5].trim()) transactions.push({ date, description: m[5].trim().slice(0, 512), amount });
-    if (transactions.length >= 200) break;
+    if (Number.isFinite(amount) && m[5].trim()) {
+      transactions.push({ date, description: m[5].trim().slice(0, 512), amount, ...(m[7] ? { tail: m[7] } : {}) });
+    }
   }
+  const amount = amountAfter('本期应还(?:总额|金额|款项)?|本期账单金额|应还总额|(?<!最低)应还金额|账单总额|Total Amount Due|(?<!Minimum )Amount Due');
+  const unbilled = /未出[账帐]单/.test(text) && !statementDate && !dueDate && amount === undefined;
   return {
     fields: {
       bankName, tail, period, statementDate, currency, dueDate,
-      amount: amountAfter('本期应还(?:总额|金额|款项)?|本期账单金额|应还总额|(?<!最低)应还金额|账单总额|Total Amount Due|(?<!Minimum )Amount Due'),
+      amount,
       minAmount: amountAfter('最低还款(?:金额|额)?|Minimum (?:Payment|Amount Due)'),
     },
     transactions,
+    ...(unbilled ? { unbilled: true as const } : {}),
   };
 }
 

@@ -24,6 +24,7 @@ import jobsRoutes from './routes/jobs.routes';
 import settingsRoutes from './routes/settings.routes';
 import transactionsRoutes from './routes/transactions.routes';
 import agendaRoutes from './routes/agenda.routes';
+import offersRoutes from './routes/offers.routes';
 import skinsRoutes from './routes/skins.routes';
 import { activeSkin } from './modules/skins/service';
 import upgradesRoutes from './routes/upgrades.routes';
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/transactions', transactionsRoutes);
   app.use('/api/agenda', agendaRoutes);
+  app.use('/api/offers', offersRoutes);
 
   // 前端静态资源（生产模式）
   const dist = config.webDistDir;

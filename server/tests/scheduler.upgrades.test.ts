@@ -5,6 +5,7 @@ const cron = vi.hoisted(() => ({ schedule: vi.fn(), destroy: vi.fn() }));
 const sync = vi.hoisted(() => vi.fn());
 const collect = vi.hoisted(() => vi.fn());
 const remindUpgrade = vi.hoisted(() => vi.fn());
+const refreshOffers = vi.hoisted(() => vi.fn());
 vi.mock('node-cron', () => ({ default: { schedule: cron.schedule } }));
 vi.mock('../src/lib/prisma', () => ({ prisma: {} }));
 vi.mock('../src/modules/email/email.service', () => ({ syncAllEnabledAccounts: sync }));
@@ -13,6 +14,8 @@ vi.mock('../src/modules/reminders/reminder.engine', () => ({
   collectAnnualFeeReminderEvents: vi.fn(async () => []),
 }));
 vi.mock('../src/modules/upgrades/upgrade-reminder', () => ({ runUpgradeReminderCheck: remindUpgrade }));
+vi.mock('../src/modules/offers/sources', () => ({ refreshEnabledOfferSources: refreshOffers }));
+vi.mock('../src/modules/offers/reminders', () => ({ collectOfferReminderEvents: vi.fn(async () => []) }));
 vi.mock('../src/notify/notification.service', () => ({ resolveNotificationChannels: vi.fn(), sendNotificationChannelBatch: vi.fn() }));
 
 import { isSchedulerStarted, runDailyReminderJob, startScheduler, stopScheduler, waitForScheduledJobs } from '../src/jobs/scheduler';
@@ -37,6 +40,7 @@ beforeEach(() => {
     return { destroy: cron.destroy };
   });
   sync.mockResolvedValue(undefined);
+  refreshOffers.mockResolvedValue(undefined);
   remindUpgrade.mockResolvedValue({ pushed: 0, skipped: 0, failed: 0 });
   collect.mockResolvedValue({ now: new Date(2026, 8, 9), cardEvents: [], customEvents: [] });
   mode('ready');
@@ -61,6 +65,7 @@ describe('持续运行的统一调度器', () => {
     await tick(8, 30);
     expect(remindUpgrade).toHaveBeenCalledTimes(12);
     expect(sync).not.toHaveBeenCalled();
+    expect(refreshOffers).not.toHaveBeenCalled();
     expect(collect).not.toHaveBeenCalled();
     expect(cron.destroy).not.toHaveBeenCalled();
     expect(isSchedulerStarted()).toBe(true);
@@ -84,6 +89,7 @@ describe('持续运行的统一调度器', () => {
     expect(sync).not.toHaveBeenCalled();
     await tick(8, 0);
     expect(sync).toHaveBeenCalledTimes(1);
+    expect(refreshOffers).toHaveBeenCalledTimes(1);
     expect(collect).toHaveBeenCalledTimes(1);
     await tick(8, 1);
     await tick(8, 30);

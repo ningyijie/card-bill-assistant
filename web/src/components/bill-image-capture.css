@@ -21,6 +21,10 @@
   margin-bottom: 8px;
 }
 
+.capture-transaction-card {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 767px) {
   .bill-center .agenda-capture-launch {
     grid-column: 1 / -1;

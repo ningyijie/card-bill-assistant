@@ -8,6 +8,7 @@ import {
   MailOutlined,
   ReloadOutlined,
   SyncOutlined,
+  StarOutlined,
   FileTextOutlined,
   ExclamationCircleFilled,
   RightOutlined,
@@ -752,6 +753,7 @@ export default function Dashboard() {
                 <Button icon={<CreditCardOutlined />} onClick={() => navigate('/cards')}>卡片</Button>
                 <Button icon={<FileTextOutlined />} onClick={() => navigate('/bills')}>账单</Button>
                 <Button icon={<SyncOutlined />} onClick={() => navigate('/email')}>邮箱</Button>
+                <Button icon={<StarOutlined />} onClick={() => navigate('/offers')}>权益</Button>
               </div>
             </Card>
           </div>

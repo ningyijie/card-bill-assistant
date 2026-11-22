@@ -43,6 +43,8 @@ services:
       TZ: Asia/Shanghai
       APP_NAME: ${APP_NAME:-}
       REMINDER_HOUR: ${REMINDER_HOUR:-8}
+      OFFERS_OLLAMA_URL: ${OFFERS_OLLAMA_URL:-}
+      OFFERS_OLLAMA_MODEL: ${OFFERS_OLLAMA_MODEL:-}
     volumes:
       - skin-data:/app/data/skins
     ports:

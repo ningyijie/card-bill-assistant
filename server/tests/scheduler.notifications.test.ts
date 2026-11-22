@@ -13,10 +13,12 @@ const collectTodayEvents = vi.hoisted(() => vi.fn());
 const collectAnnualFeeReminderEvents = vi.hoisted(() => vi.fn());
 const resolveNotificationChannels = vi.hoisted(() => vi.fn());
 const sendNotificationChannelBatch = vi.hoisted(() => vi.fn());
+const collectOfferReminderEvents = vi.hoisted(() => vi.fn());
 
 vi.mock('../src/lib/prisma', () => ({ prisma }));
 vi.mock('../src/modules/email/email.service', () => ({ syncAllEnabledAccounts }));
 vi.mock('../src/modules/reminders/reminder.engine', () => ({ collectTodayEvents, collectAnnualFeeReminderEvents }));
+vi.mock('../src/modules/offers/reminders', () => ({ collectOfferReminderEvents }));
 vi.mock('../src/notify/notification.service', () => ({
   resolveNotificationChannels,
   sendNotificationChannelBatch,
@@ -29,6 +31,7 @@ describe('runDailyReminderJob 通用通知渠道', () => {
     vi.clearAllMocks();
     syncAllEnabledAccounts.mockResolvedValue(undefined);
     collectAnnualFeeReminderEvents.mockResolvedValue([]);
+    collectOfferReminderEvents.mockResolvedValue([]);
     collectTodayEvents.mockResolvedValue({
       now: new Date('2026-08-24T00:00:00.000Z'),
       cardEvents: [{ type: 'card_due', refId: -7, cardId: 7, title: '还款提醒', body: '今天还款' }],
@@ -58,6 +61,16 @@ describe('runDailyReminderJob 通用通知渠道', () => {
       data: expect.objectContaining({ channel: 'future-channel', status: 'pending' }),
     }));
     expect(sendNotificationChannelBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('权益活动只交给 Bark，普通账单保持原有渠道', async () => {
+    collectOfferReminderEvents.mockResolvedValue([{
+      type: 'offer_expiry', refId: 11, title: '活动到期', body: '活动说明',
+      fireDate: new Date('2026-08-25T16:00:00.000Z'), channelType: 'bark',
+    }]);
+    expect(await runDailyReminderJob()).toEqual({ pushed: 3, skipped: 0, failed: 0 });
+    const rows = prisma.notifyLog.create.mock.calls.map(([input]) => [input.data.type, input.data.channel]);
+    expect(rows).toEqual([['card_due', 'bark'], ['offer_expiry', 'bark'], ['card_due', 'future-channel']]);
   });
 
   it('每两小时仍检查待申请年费并按固定账期日期去重', async () => {

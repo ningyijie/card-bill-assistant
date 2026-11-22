@@ -11,7 +11,7 @@ import {
 import type { ParsedBill, ParsedTransaction } from '../src/parsers/types';
 import { isAccountBillParser } from '../src/parsers/registry';
 import { fromYmd } from '../src/lib/dates';
-import { saveScreenshotBill } from '../src/modules/bills/screenshot-bills';
+import { saveScreenshotBill, saveUnbilledScreenshot } from '../src/modules/bills/screenshot-bills';
 
 // mock prisma：$transaction 直接把 tx 传给回调，不落真库
 const tx = vi.hoisted(() => ({
@@ -256,6 +256,53 @@ describe('applyParsedBill 明细元数据落库', () => {
       data: [expect.objectContaining({ description: '新增商户', billId: 101, screenshot: true, sequence: 4 })],
     });
     expect(tx.bill.upsert.mock.calls[0][0].update).not.toHaveProperty('paidStatus');
+  });
+
+  it('未出账截图按卡去重，同一页的真实重复笔数保留，已导入的正式明细不再新增', async () => {
+    const date = '2026-08-01';
+    const row = { date, description: '财付通 - 示例商户', amount: 20, cardId: 7 };
+    const existing = { ...row, description: '财付通（示例商户）', transactionDate: fromYmd(date), currency: 'CNY',
+      billId: 101, statementMailLogId: null, sequence: 0 };
+    tx.card.findMany.mockResolvedValue([
+      { id: 7, bankName: '测试银行', cardLast4: '1234' },
+      { id: 8, bankName: '测试银行', cardLast4: '5678' },
+    ]);
+    tx.billTransaction.findMany.mockResolvedValueOnce([existing]);
+    const input = { currency: 'CNY', transactions: [row, row, { ...row, cardId: 8 }] };
+    await expect(saveUnbilledScreenshot(input)).resolves.toEqual({ added: 2, duplicates: 1 });
+    const additions = tx.billTransaction.createMany.mock.calls[0][0].data;
+    expect(additions).toMatchObject([{ cardId: 7, sequence: 1, screenshot: true }, { cardId: 8, sequence: 0, screenshot: true }]);
+    expect(tx.bill.upsert).not.toHaveBeenCalled();
+    tx.billTransaction.findMany.mockResolvedValueOnce([existing, ...additions]);
+    await expect(saveUnbilledScreenshot(input)).resolves.toEqual({ added: 0, duplicates: 3 });
+  });
+
+  it('正式邮件只替换已对上的一笔未出账截图，重复同步不删掉同键的另一笔', async () => {
+    const common = { cardId: 7, currency: 'CNY', transactionDate: fromYmd('2026-08-01'), amount: 20 };
+    const first = { ...common, id: 21, description: '财付通-示例商户', sequence: 0 };
+    const second = { ...first, id: 22, sequence: 1 };
+    const official = { ...common, id: 23, description: '财付通（示例商户）', sequence: 0 };
+    tx.billTransaction.findMany.mockResolvedValueOnce([first, second]).mockResolvedValueOnce([official])
+      .mockResolvedValueOnce([second]).mockResolvedValueOnce([official]);
+    const bill = makeBill([{ date: '08-01', description: official.description, amount: 20 }]);
+    await applyParsedBill(55, 'czbank2026', bill);
+    await applyParsedBill(55, 'czbank2026', bill);
+    expect(tx.billTransaction.deleteMany.mock.calls.filter(([input]) => input.where.screenshot === true))
+      .toEqual([[{ where: { id: { in: [21] }, billId: null, statementMailLogId: null, dailyMailLogId: null, screenshot: true } }]]);
+  });
+
+  it('正式合并账单只存一份应还总额，录入时按明细各自归卡', async () => {
+    tx.card.findUnique.mockResolvedValue({ id: 7, bankName: '测试银行', cardLast4: '1234' });
+    tx.card.findMany.mockResolvedValue([{ id: 8, cardLast4: '5678' }]);
+    tx.bill.findFirst.mockResolvedValueOnce(null);
+    const input = {
+      cardId: 7, statementDate: '2026-08-05', dueDate: '2026-08-23', currency: 'CNY', amount: 100, minAmount: null,
+      transactions: [{ date: '2026-08-01', description: '示例消费', amount: 100, cardId: 8 }],
+    };
+    await saveScreenshotBill(input);
+    expect(tx.bill.upsert).toHaveBeenCalledTimes(1);
+    expect(tx.billTransaction.createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({ cardId: 8, cardLast4: '5678' })] });
+    expect(tx.billCard.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: { billId: 101, cardId: 8 } }));
   });
 
   it.each(['email', 'manual'])('历史补录保留 %s 卡片的当前账期规则，正常合账仍写入账单', async source => {

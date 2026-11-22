@@ -122,6 +122,12 @@ function recognizeImage(data: Buffer): Promise<string> {
   });
 }
 
+export async function recognizeOfferScreenshot(data: Buffer): Promise<string> {
+  if (running >= 2) throw new ApiError(429, '还有截图正在识别，请稍后再试');
+  running++;
+  try { return await recognizeImage(data); } finally { running--; }
+}
+
 async function recognizeBatch(capture: Capture, files: ImageFile[]) {
   const seen = new Map<string, number>();
   const bankNames = listParsers().map((parser) => parser.bankName).filter((name) => name.endsWith('银行'));

@@ -30,7 +30,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  upload: <T>(path: string, body: Blob) => request<T>(path, { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body }),
+  upload: <T>(path: string, body: Blob, contentType = 'application/zip') =>
+    request<T>(path, { method: 'POST', headers: { 'Content-Type': contentType }, body }),
   uploadForm: <T>(path: string, body: FormData) => request<T>(path, { method: 'POST', headers: {}, body }),
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown, options: Pick<RequestInit, 'signal'> = {}) =>

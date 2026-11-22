@@ -13,6 +13,7 @@ import { pickPrimaryId } from '../lib/card-groups';
 import { reconcileUnfinishedPlaceholderCards } from '../lib/card-placeholders';
 import { computeRuleDueDate } from '../modules/bills/ledger';
 import { screenshotTransactionKey } from '../modules/bills/screenshot-parser';
+import { reconcileUnbilledScreenshots } from '../modules/bills/screenshot-reconcile';
 import { isAccountBillParser } from './registry';
 
 /** 无卡号占位（现行 ---- 与历史 0000） */
@@ -583,6 +584,9 @@ async function applyParsedBillInTransaction(
     });
     if (resolvedTransactions.length > 0) {
       await tx.billTransaction.createMany({ data: resolvedTransactions.map((transaction) => transaction.data) });
+      await reconcileUnbilledScreenshots(tx, resolvedTransactions.map(({ data, cardId, transactionDate, source }) => ({
+        cardId, transactionDate, description: data.description, amount: source.amount, currency,
+      })));
     }
     const screenshotRows = preserveScreenshotDetails
       ? await preserveScreenshotTransactions(tx, billRow.id, screenshotTwins.map((row) => row.id))

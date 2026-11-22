@@ -3,7 +3,7 @@ import express, { Router, type Request } from 'express';
 import { z } from 'zod';
 import { ApiError, asyncHandler } from '../lib/errors';
 import { prisma } from '../lib/prisma';
-import { saveScreenshotBill, screenshotBillSchema } from '../modules/bills/screenshot-bills';
+import { saveScreenshotBill, screenshotBillSchema, saveUnbilledScreenshot, unbilledScreenshotSchema } from '../modules/bills/screenshot-bills';
 import { createScreenshotCapture, getScreenshotCapture, readScreenshotUpload, SCREENSHOT_UPLOAD_LIMIT } from '../modules/bills/screenshot-upload';
 import { requireAuth, type AuthedRequest } from './middleware';
 import { attemptLimit } from './security.middleware';
@@ -68,6 +68,12 @@ router.post('/:id/bills', asyncHandler(async (req, res) => {
   const capture = getScreenshotCapture(ownerOf(req), captureId.parse(req.params.id));
   if (capture.status !== 'ready') throw new ApiError(409, '截图仍在识别，请稍等');
   res.json(await saveScreenshotBill(screenshotBillSchema.parse(req.body)));
+}));
+
+router.post('/:id/transactions', asyncHandler(async (req, res) => {
+  const capture = getScreenshotCapture(ownerOf(req), captureId.parse(req.params.id));
+  if (capture.status !== 'ready') throw new ApiError(409, '截图仍在识别，请稍等');
+  res.json(await saveUnbilledScreenshot(unbilledScreenshotSchema.parse(req.body)));
 }));
 
 export default router;

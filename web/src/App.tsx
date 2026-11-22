@@ -32,6 +32,7 @@ const loadTransactions: LazyPageLoader = () => import('./pages/Transactions');
 const loadEmail: LazyPageLoader = () => import('./pages/Email');
 const loadParserCenter: LazyPageLoader = () => import('./pages/ParserCenter');
 const loadSettings: LazyPageLoader = () => import('./pages/Settings');
+const loadOffers: LazyPageLoader = () => import('./pages/Offers');
 
 function CaptureSessionRedirect({ authenticated }: { authenticated: boolean }) {
   const { pathname, search } = useLocation();
@@ -210,6 +211,7 @@ export default function App() {
             <Route path="cards" element={<DeferredPage loader={loadCards} />} />
             <Route path="bills" element={<DeferredPage loader={loadBills} />} />
             <Route path="transactions" element={<DeferredPage loader={loadTransactions} />} />
+            <Route path="offers" element={<DeferredPage loader={loadOffers} />} />
             <Route path="reminders" element={<Navigate to="/bills?view=today" replace />} />
             <Route path="email" element={<DeferredPage loader={loadEmail} />} />
             <Route path="parsers" element={<DeferredPage loader={loadParserCenter} />} />

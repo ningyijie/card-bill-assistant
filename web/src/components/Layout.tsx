@@ -27,6 +27,7 @@ import {
   AppstoreOutlined,
   LoadingOutlined,
   LeftOutlined,
+  StarOutlined,
 } from '../skins/icons';
 import { api } from '../api/client';
 import { useAppName, useAppVersion } from '../appName';
@@ -44,6 +45,7 @@ export const APP_MENU = [
   { key: '/cards', icon: <CreditCardOutlined />, label: '卡片管理', mobileLabel: '卡片' },
   { key: '/bills', icon: <FileTextOutlined />, label: '账单中心', mobileLabel: '账单' },
   { key: '/transactions', icon: <ProfileOutlined />, label: '账单明细', mobileLabel: '明细' },
+  { key: '/offers', icon: <StarOutlined />, label: '权益与活动', mobileLabel: '优惠' },
   { key: '/email', icon: <MailOutlined />, label: '邮箱绑定', mobileLabel: '邮箱' },
   { key: '/parsers', icon: <ExperimentOutlined />, label: '解析器中心', mobileLabel: '解析器' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置', mobileLabel: '设置' },
@@ -617,6 +619,11 @@ export default function Layout({ onLogout }: { onLogout: () => void }) {
                 </div>
                 <div className="mobile-more-appearance"><ColorModeSwitch /></div>
                 <List header="管理功能">
+                  <List.Item>
+                    <Button type="text" block className="mobile-more-action" icon={<StarOutlined />} onClick={() => navigate('/offers')}>
+                      权益与活动
+                    </Button>
+                  </List.Item>
                   <List.Item>
                     <Button
                       type="text"

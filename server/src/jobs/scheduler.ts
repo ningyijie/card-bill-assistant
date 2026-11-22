@@ -8,6 +8,8 @@ import { syncAllEnabledAccounts } from '../modules/email/email.service';
 import { resolveNotificationChannels, sendNotificationChannelBatch } from '../notify/notification.service';
 import { getUpgradeRuntimeState, isUpgradeBusinessBlocked } from '../modules/upgrades/upgrade.runtime';
 import { runUpgradeReminderCheck } from '../modules/upgrades/upgrade-reminder';
+import { collectOfferReminderEvents } from '../modules/offers/reminders';
+import { refreshEnabledOfferSources } from '../modules/offers/sources';
 
 /** pending 发送预占的租约；进程中断后超过该时长可由下一次任务原子接管。 */
 const NOTIFY_PENDING_LEASE_MS = 15 * 60 * 1000;
@@ -37,9 +39,13 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
   });
   if (isUpgradeBusinessBlocked()) return { pushed: 0, skipped: 0, failed: 0 };
 
-  const [{ now, cardEvents, customEvents }, annualFeeEvents] = await Promise.all([
+  const [{ now, cardEvents, customEvents }, annualFeeEvents, offerEvents] = await Promise.all([
     collectTodayEvents(),
     collectAnnualFeeReminderEvents(),
+    collectOfferReminderEvents().catch(() => {
+      console.error('[job] 本次活动提醒读取失败');
+      return [];
+    }),
   ]);
   return sendReminderEvents([
     ...cardEvents.map((e) => ({
@@ -51,6 +57,7 @@ export async function runDailyReminderJob(): Promise<{ pushed: number; skipped: 
     })),
     ...customEvents.map((e) => ({ type: e.type, refId: e.refId, title: e.title, body: e.body, fireDate: now })),
     ...annualFeeEvents,
+    ...offerEvents,
   ]);
 }
 
@@ -60,6 +67,7 @@ interface ReminderDelivery {
   title: string;
   body: string;
   fireDate: Date;
+  channelType?: string;
 }
 
 async function sendReminderEvents(all: ReminderDelivery[]): Promise<{ pushed: number; skipped: number; failed: number }> {
@@ -83,6 +91,7 @@ async function sendReminderEvents(all: ReminderDelivery[]): Promise<{ pushed: nu
     const toSend: Array<{ title: string; body: string }> = [];
     const pendingLogIds: number[] = [];
     for (const event of all) {
+      if (event.channelType && event.channelType !== channel.type) continue;
       try {
         const log = await prisma.notifyLog.create({
           data: {
@@ -165,7 +174,10 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
 
   // 邮箱每天随整点提醒同步一次。年费检查保留原来的两小时频率。
   if (now.getMinutes() === 0 && now.getHours() === config.reminderHour) {
-    await runDailyReminderJob();
+    await Promise.all([
+      runDailyReminderJob(),
+      refreshEnabledOfferSources().catch(() => console.error('[job] 本次活动来源同步失败')),
+    ]);
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {
     const annualFeeEvents = await collectAnnualFeeReminderEvents();
     if (annualFeeEvents.length > 0) await sendReminderEvents(annualFeeEvents);

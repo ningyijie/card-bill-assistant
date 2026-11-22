@@ -42,6 +42,23 @@ describe('截图识别', () => {
     expect(result.fields).toMatchObject({ statementDate: '2026-12-19', dueDate: '2027-01-07', amount: 12.34 });
   });
 
+  it('识别未出账 App 的两行式交易，保留每笔卡尾和负号，略过未拍全的一笔', () => {
+    const result = parseScreenshotText([
+      '我的账单', '未 出 账单 已 出 账单',
+      '财 付 通 - 商 户 11.25', '2026–11–19 尾 号 1111',
+      '财 付 通 - 商 户 −2.30', '2026-11-18 尾 号 2222',
+      '2026-11-17 示例商户 5.20 尾号 2222',
+      '未拍全商户 0.99',
+    ].join('\n'));
+    expect(result.unbilled).toBe(true);
+    expect(result.fields).toMatchObject({ statementDate: undefined, dueDate: undefined, tail: undefined });
+    expect(result.transactions).toEqual([
+      { date: '2026-11-19', description: '财付通 - 商户', amount: 11.25, tail: '1111' },
+      { date: '2026-11-18', description: '财付通 - 商户', amount: -2.30, tail: '2222' },
+      { date: '2026-11-17', description: '示例商户', amount: 5.20, tail: '2222' },
+    ]);
+  });
+
   it('千位逗号被 OCR 读成点时按完整金额识别，无法判断时不截取金额前缀', () => {
     expect(parseScreenshotText('本期应还金额 人民币 1.203.85').fields.amount).toBe(1203.85);
     expect(parseScreenshotText('本期应还金额 人民币 1.20.85').fields.amount).toBeUndefined();

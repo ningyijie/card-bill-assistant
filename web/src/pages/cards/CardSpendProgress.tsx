@@ -85,7 +85,7 @@ export function CardSpendProgress({ cardId, cardLabel, onClose }: { cardId: numb
       <Flex vertical gap={12} style={{ maxHeight: '70vh', overflowY: 'auto' }}>
         {cardLabel && <Typography.Text strong>{cardLabel}</Typography.Text>}
         <Typography.Text type="secondary">
-          进度按已导入的账单明细估算。活动资格和退款扣减以银行记录为准。
+          自然月和指定日期范围会计入已核对的未出账截图交易。活动资格和退款扣减以银行记录为准。
         </Typography.Text>
         {loadError && <Alert type="error" title={loadError}
           action={<Button size="small" onClick={() => setRevision((value) => value + 1)}>重试</Button>} />}

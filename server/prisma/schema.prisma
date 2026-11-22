@@ -81,6 +81,7 @@ model Card {
   annualFeeDate      DateTime?
   annualFeeDateManual Boolean  @default(false)
   annualFeePolicy     Json?
+  rewardProfile      Json?
   /** 卡片配色序号：前端色表下标（0-31）；null = 按卡片 id 自动轮换 */
   colorPalette       Int?
   /** 套卡内优先显示卡：primaryManual 压过自动，否则 priority 降序，并列 ID 升序；hidden 卡不参与候选。单卡组恒 false。不表示银行主副卡，不承担主卡权限。 */
@@ -107,9 +108,69 @@ model Card {
   aliases            CardAlias[]
   annualFeeReviews   AnnualFeeReview[]
   spendConfirmations CardSpendConfirmation[]
+  offerRecords       CardOfferRecord[]
 
   @@unique([bankName, cardLast4])
   @@index([businessPrimaryId])
+}
+
+model RewardOffer {
+  id            Int       @id @default(autoincrement())
+  kind          String    @db.VarChar(16)
+  title         String    @db.VarChar(120)
+  rule          Json
+  review        String    @default("ready") @db.VarChar(16)
+  sourceKey     String?   @unique @db.VarChar(191)
+  fingerprint   String?   @db.VarChar(64)
+  verifiedAt    DateTime?
+  updatedAt     DateTime  @updatedAt
+  records       CardOfferRecord[]
+  revisions     RewardOfferRevision[]
+  merchantKeys  RewardOfferMerchant[]
+
+  @@index([kind, review])
+}
+
+model RewardOfferMerchant {
+  key     String      @db.VarChar(80)
+  offerId Int
+  offer   RewardOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@id([key, offerId])
+  @@index([offerId])
+}
+
+model RewardOfferRevision {
+  id        Int         @id @default(autoincrement())
+  offerId   Int
+  offer     RewardOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  snapshot  Json
+  changedAt DateTime    @default(now())
+
+  @@index([offerId, changedAt])
+}
+
+model CardOfferRecord {
+  id        Int         @id @default(autoincrement())
+  offerId   Int
+  offer     RewardOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  cardId    Int
+  card      Card        @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  state     Json
+  updatedAt DateTime    @updatedAt
+
+  @@unique([offerId, cardId])
+  @@index([cardId])
+}
+
+model RewardSource {
+  key          String    @id @db.VarChar(32)
+  enabled      Boolean   @default(false)
+  lastAttempt  DateTime?
+  lastSuccess  DateTime?
+  etag         String?   @db.VarChar(255)
+  lastModified String?   @db.VarChar(100)
+  error        String?   @db.VarChar(255)
 }
 
 model CardSpendConfirmation {

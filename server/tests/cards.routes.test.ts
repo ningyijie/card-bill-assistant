@@ -259,7 +259,14 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
       currency: 'CNY', metric: 'count', count: 10, cashback: { rate: 1, cap: 100 } };
     const periodKey = `calendar_month:${month}:count`;
     prisma.card.findUnique.mockResolvedValue(existingCard({ annualFeePolicy: { spendRules: [rule] } }));
+    prisma.billTransaction.findMany.mockResolvedValue([
+      { amount: 2.50, currency: 'CNY', description: '截图商户', transactionDate: today(), bill: null, statementMailLog: null },
+    ]);
+    prisma.cardSpendConfirmation.findMany.mockResolvedValue([]);
     await withServer(async (url) => {
+      const progress = await fetch(`${url}/api/cards/2/spend-progress`);
+      expect(progress.status).toBe(200);
+      expect(await progress.json()).toMatchObject({ tracks: [{ periods: [{ estimatedCount: 1, remaining: 9 }] }] });
       const confirm = (fields: { amount?: number; count?: number }) => fetch(`${url}/api/cards/2/spend-progress/${rule.id}`, {
         method: 'PUT', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ periodKey, ...fields }),
@@ -268,6 +275,11 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
       expect((await confirm({ amount: 8 })).status).toBe(400);
       expect((await confirm({ count: 8 })).status).toBe(200);
     });
+    expect(prisma.billTransaction.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ cardId: 2, OR: expect.arrayContaining([
+        { billId: null, statementMailLogId: null, dailyMailLogId: null, screenshot: true },
+      ]) }),
+    }));
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     expect(prisma.$executeRaw).toHaveBeenCalledWith(expect.any(Array), 2, rule.id, periodKey, 8, 8);
   });
