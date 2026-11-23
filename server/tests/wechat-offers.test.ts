@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => ({
   appSetting: { findUnique: vi.fn() }, rewardSource: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   card: { findMany: vi.fn() }, rewardOffer: { findFirst: vi.fn() }, $transaction: vi.fn(),
+  wechatOfferSubscription: { findUnique: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
 }));
 const saveDraft = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/prisma', () => ({ prisma: db }));
@@ -10,6 +11,11 @@ vi.mock('../src/modules/offers/service', () => ({ knownOfferMerchants: async () 
 
 import { articleDrafts, articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from '../src/modules/offers/wechat-articles';
 import { importWechatArticle, refreshWechatFeed, wechatImportSchema } from '../src/modules/offers/wechat-source';
+import { pollWechatScan, startWechatScan, wechatCollectionStatus } from '../src/modules/offers/wechat-collection';
+import { findWechatAccounts, listWechatArticleLinks } from '../src/modules/offers/wechat-platform';
+import { decrypt } from '../src/lib/crypto';
+
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 const url = 'https://mp.weixin.qq.com/s/example_offer_A';
 const feedUrl = 'http://192.168.1.3:8001/feed/MP_WXS_123456.rss';
@@ -55,6 +61,45 @@ describe('公众号活动', () => {
     expect(articleUrlSchema.safeParse('https://mp.weixin.qq.com.example.net/s/test').success).toBe(false);
     expect(articleUrlSchema.parse('https://mp.weixin.qq.com/s?idx=1&from=wx&sn=abc&mid=123&__biz=MzA%3D'))
       .toBe('https://mp.weixin.qq.com/s?__biz=MzA%3D&mid=123&idx=1&sn=abc');
+  });
+});
+
+describe('内置公众号采集', () => {
+  it('使用微信二维码确认授权，加密后保存且状态接口不暴露会话', async () => {
+    const sampleKey = '21'.repeat(32);
+    vi.stubEnv('ENCRYPTION_KEY', sampleKey);
+    const requests = [new Response('page'), Response.json({ base_resp: { ret: 0 }, uuid: 'official-qr' }),
+      new Response(Buffer.from([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpg' } }),
+      Response.json({ base_resp: { ret: 0 }, status: 3 }),
+      Response.json({ redirect_url: '/cgi-bin/home?token=9712' }, { headers: { 'Set-Cookie': 'slave_sid=private_test_session; Path=/; Max-Age=3600' } })];
+    const fetch = vi.fn(async (_request: URL) => requests.shift()!);
+    vi.stubGlobal('fetch', fetch);
+    const login = await startWechatScan();
+    expect(login.image).toMatch(/^data:image\/jpeg;base64,/);
+    expect(fetch.mock.calls.every(([request]) => new URL(String(request)).origin === 'https://mp.weixin.qq.com')).toBe(true);
+    expect(await pollWechatScan(login.id)).toEqual({ status: 'authorized' });
+    const stored = db.wechatOfferSubscription.upsert.mock.calls.at(-1)?.[0].update;
+    expect(JSON.parse(decrypt(Buffer.from(sampleKey, 'hex'), stored.credential))).toMatchObject({ token: '9712',
+      cookies: expect.arrayContaining([['slave_sid', 'private_test_session']]) });
+    db.wechatOfferSubscription.findUnique.mockResolvedValue(stored);
+    expect(await wechatCollectionStatus()).toEqual({ account: null, authorized: true, enabled: false,
+      error: null, expiresAt: stored.expiresAt, lastSuccess: null });
+  });
+
+  it('搜索公众号后仅保留有效微信原文，并按微信返回值区分频控与授权过期', async () => {
+    const credential = { token: '123', cookies: [['slave_sid', 'mock']] as [string, string][] };
+    const article = JSON.stringify({ appmsgex: [{ link: `${url}?from=share` }, { link: url }, { link: 'https://example.org/article' }] });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, list: [{ fakeid: 'MzE=', nickname: '卡羊腿' }] }))
+      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: JSON.stringify({ publish_list: [{ publish_info: article }] }) }))
+      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 200013 } }))
+      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 200003 } }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(findWechatAccounts(credential, '卡羊腿')).resolves.toEqual([{ id: 'MzE=', name: '卡羊腿' }]);
+    await expect(listWechatArticleLinks(credential, 'MzE=')).resolves.toEqual([url]);
+    expect(new URL(String(fetch.mock.calls[1][0])).searchParams.get('fakeid')).toBe('MzE=');
+    await expect(listWechatArticleLinks(credential, 'MzE=')).rejects.toMatchObject({ status: 429 });
+    await expect(listWechatArticleLinks(credential, 'MzE=')).rejects.toMatchObject({ status: 409 });
   });
 });
 

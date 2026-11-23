@@ -19,6 +19,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 # 源码 + Prisma
 COPY server/ ./
+COPY THIRD-PARTY-NOTICES.md ./
 # generate 只需要格式有效的数据源配置，不会连接该构建期占位数据库
 RUN DATABASE_URL=mysql://build:build@127.0.0.1:3306/build ./node_modules/.bin/prisma generate
 

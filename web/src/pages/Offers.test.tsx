@@ -72,6 +72,7 @@ it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘
     .mockResolvedValueOnce({ updated: 1, needsContent: false });
   render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
+  fireEvent.click(screen.getByRole('button', { name: '外部 WeRSS（可选）' }));
   const rssInput = await screen.findByRole('textbox', { name: '公众号 RSS 地址' }) as HTMLInputElement;
   await waitFor(() => expect(rssInput.disabled).toBe(false));
   fireEvent.change(rssInput, { target: { value: address } });
@@ -87,4 +88,26 @@ it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘
   fireEvent.click(screen.getByRole('button', { name: '生成活动草稿' }));
   await waitFor(() => expect(importArticle).toHaveBeenLastCalledWith('/api/offers/wechat-article',
     expect.objectContaining({ url: article, text: '海底捞满 200 元减 50 元' })));
+});
+
+it('内置公众号授权后可直接搜索并订阅，无需填写 RSS', async () => {
+  const account = { id: 'MzE=', name: '卡羊腿' };
+  const collection = { account: null, authorized: true, enabled: false, expiresAt: null, lastSuccess: null, error: null };
+  const read = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url.includes('/accounts?')) return [account];
+    if (url.endsWith('/wechat-collection')) return collection;
+    return url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false };
+  });
+  const save = vi.spyOn(api, 'put').mockImplementation(async () => {
+    Object.assign(collection, { account, enabled: true });
+    return { ok: true };
+  });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
+  fireEvent.change(await screen.findByLabelText('搜索公众号'), { target: { value: '卡羊腿' } });
+  fireEvent.click(screen.getByRole('button', { name: '搜索公众号' }));
+  fireEvent.click(await screen.findByRole('button', { name: '订阅 卡羊腿' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/wechat-collection', { account, enabled: true }));
+  expect(read).toHaveBeenCalledWith('/api/offers/wechat-collection/accounts?' + new URLSearchParams({ q: '卡羊腿' }).toString());
+  expect(await screen.findByRole('switch', { name: '公众号每日同步' })).toBeTruthy();
 });

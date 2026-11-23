@@ -117,7 +117,7 @@ export function parseOfficialOfferPage(source: Source, html: string): OfficialEn
   }).slice(0, 20);
 }
 
-export async function boundedOfferDocument(response: Response, max = 1_500_000) {
+export async function boundedOfferBytes(response: Response, max: number) {
   if (!response.body || Number(response.headers.get('content-length') ?? 0) > max) throw new Error('来源内容体积超过限制');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -131,7 +131,11 @@ export async function boundedOfferDocument(response: Response, max = 1_500_000) 
       chunks.push(value);
     }
   } finally { await reader.cancel().catch(() => undefined); }
-  const buffer = Buffer.concat(chunks);
+  return Buffer.concat(chunks);
+}
+
+export async function boundedOfferDocument(response: Response, max = 1_500_000) {
+  const buffer = await boundedOfferBytes(response, max);
   const charset = response.headers.get('content-type') + buffer.subarray(0, 4000).toString('latin1');
   return new TextDecoder(/charset\s*=\s*["']?(?:gbk|gb2312|gb18030)/i.test(charset) ? 'gb18030' : 'utf-8').decode(buffer);
 }

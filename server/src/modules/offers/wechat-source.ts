@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { Prisma } from '../../generated/prisma/client';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../lib/errors';
 import { ymd } from '../../lib/dates';
@@ -34,18 +35,21 @@ export async function configureWechatFeed({ url, enabled }: z.infer<typeof wecha
   }, { isolationLevel: 'Serializable' }));
 }
 
-async function importArticles(items: WechatArticle[], feedUrl?: string) {
-  const [known, cards] = await Promise.all([knownOfferMerchants(), feedUrl
-    ? prisma.card.findMany({ where: { hidden: false }, distinct: ['bankName'], select: { bankName: true } }) : []]);
+export const wechatArticleKey = (url: string) => `wechat:${createHash('sha256').update(url).digest('hex')}:`;
+
+export async function importWechatArticles(items: WechatArticle[], isCurrent?: (tx: Prisma.TransactionClient) => Promise<boolean>) {
+  if (!items.length) return { updated: 0, skipped: 0 };
+  const [known, cards] = await Promise.all([knownOfferMerchants(), isCurrent
+    ? prisma.card.findMany({ where: { hidden: false, status: 'active' }, distinct: ['bankName'], select: { bankName: true } }) : []]);
   const merchants = [...new Set([...known, ...commonOfferMerchants])];
   const ownedBanks = cards.map(({ bankName }) => bankName);
   let updated = 0;
   let skipped = 0;
   for (const article of items) {
-    const prefix = `wechat:${createHash('sha256').update(article.url).digest('hex')}:`;
-    const drafts = articleDrafts(article, ownedBanks, merchants, Boolean(feedUrl));
+    const prefix = wechatArticleKey(article.url);
+    const drafts = articleDrafts(article, ownedBanks, merchants, Boolean(isCurrent));
     const count = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
-      if (feedUrl && (await tx.appSetting.findUnique({ where: { key: settingKey } }))?.value !== feedUrl) return 0;
+      if (isCurrent && !await isCurrent(tx)) return 0;
       if (!drafts.length || await tx.rewardOffer.findFirst({ where: { sourceKey: { startsWith: prefix } }, select: { id: true } })) return 0;
       for (const { rule, fingerprint } of drafts) {
         await saveOfferInTransaction(tx, rule, 'draft', undefined, { sourceKey: `${prefix}${fingerprint}`, fingerprint });
@@ -59,17 +63,17 @@ async function importArticles(items: WechatArticle[], feedUrl?: string) {
 }
 
 export async function importWechatArticle({ url, title, text }: z.infer<typeof wechatImportSchema>) {
-  let article: WechatArticle | undefined;
-  if (text) article = { url, text, title: title || text.split(/\r?\n/, 1)[0].slice(0, 120) };
-  else {
-    try {
-      const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000),
-        headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0' } });
-      if (response.ok) article = parseWechatPage(url, await boundedOfferDocument(response));
-    } catch { /* 公众号可能要求验证，前端保留地址方便补录。 */ }
-  }
+  const article = text ? { url, text, title: title || text.split(/\r?\n/, 1)[0].slice(0, 120) } : await readWechatArticle(url);
   if (!article) return { updated: 0, skipped: 0, needsContent: true };
-  return { ...await importArticles([article]), needsContent: false };
+  return { ...await importWechatArticles([article]), needsContent: false };
+}
+
+export async function readWechatArticle(url: string) {
+  try {
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000),
+      headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0' } });
+    if (response.ok) return parseWechatPage(url, await boundedOfferDocument(response));
+  } catch { /* 公众号可能要求验证，前端保留地址方便补录。 */ }
 }
 
 let runningFeed: Promise<{ updated: number; skipped: number; missing: number }> | undefined;
@@ -98,7 +102,8 @@ async function syncWechatFeed(manual: boolean) {
       headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml' } });
     if (!response.ok) throw new Error(`WeRSS 返回 HTTP ${response.status}`);
     const { articles, missing } = parseWechatFeed(await boundedOfferDocument(response, 4_000_000));
-    const result = await importArticles(articles, url);
+    const result = await importWechatArticles(articles, async (tx) =>
+      (await tx.appSetting.findUnique({ where: { key: settingKey } }))?.value === url);
     const warning = missing ? `${missing} 篇缺少可读正文或微信原文链接。请在 WeRSS 启用全文和原链接。` : null;
     await prisma.rewardSource.updateMany({ where: { key: stateKey, lastAttempt }, data: {
       ...(articles.length > 0 || !missing ? { lastSuccess: new Date() } : {}), error: warning,

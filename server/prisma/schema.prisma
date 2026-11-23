@@ -173,6 +173,19 @@ model RewardSource {
   error        String?   @db.VarChar(255)
 }
 
+model WechatOfferSubscription {
+  id            Int       @id
+  credential    Bytes?    @db.Blob
+  authorizedAt  DateTime?
+  expiresAt     DateTime?
+  accountId     String?   @db.VarChar(80)
+  accountName   String?   @db.VarChar(120)
+  enabled       Boolean   @default(false)
+  lastAttempt   DateTime?
+  lastSuccess   DateTime?
+  error         String?   @db.VarChar(255)
+}
+
 model CardSpendConfirmation {
   cardId    Int
   card      Card    @relation(fields: [cardId], references: [id], onDelete: Cascade)

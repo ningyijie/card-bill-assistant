@@ -9,6 +9,7 @@ import { formatMoney } from '../lib/money';
 import { useResource } from '../lib/useResource';
 import { OfferEditor } from './offers/OfferEditor';
 import { WechatOfferSources } from './offers/WechatOfferSources';
+import { WechatAutoSource } from './offers/WechatAutoSource';
 import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
@@ -274,7 +275,14 @@ export default function Offers() {
       {!cards.length && <Empty description="请先在卡片管理中添加信用卡" />}
     </div> },
     { key: 'sources', label: '活动来源', children: <Flex vertical gap={12}>
-      {tab === 'sources' && <WechatOfferSources onImported={refresh} />}
+      {tab === 'sources' && <>
+        <WechatAutoSource onImported={refresh} />
+        <Collapse items={[{ key: 'werss', label: '外部 WeRSS（可选）', children: <WechatOfferSources onImported={refresh} /> }]} />
+      </>}
+      <Flex justify="space-between" align="center" wrap gap={6}>
+        <Typography.Text strong>银行官网活动来源</Typography.Text>
+        <Button size="small" type="link" onClick={() => setTab('cards')}>查看持有卡片</Button>
+      </Flex>
       {sources.error && <Alert type="error" title={sources.error} />}
       {sources.loading && <Spin />}
       {sources.data?.map((source) => <Card key={source.key} size="small" title={source.name}>

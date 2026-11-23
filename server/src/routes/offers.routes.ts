@@ -9,6 +9,8 @@ import { appliesToCard } from '../modules/offers/compare';
 import { knownOfferMerchants, offerCatalog, saveOfferInTransaction, searchRewardOffers } from '../modules/offers/service';
 import { initialOfferSources, offerSourceStatus, offerSources, refreshOfferSource } from '../modules/offers/sources';
 import { configureWechatFeed, importWechatArticle, refreshWechatFeed, wechatFeedSettings, wechatFeedStatus, wechatImportSchema } from '../modules/offers/wechat-source';
+import { configureWechatCollection, pollWechatScan, refreshWechatCollection, revokeWechatScan,
+  searchWechatAccounts, startWechatScan, wechatCollectionSettings, wechatCollectionStatus } from '../modules/offers/wechat-collection';
 import { withTransactionRetry } from '../parsers/pipeline';
 import { requireAuth } from './middleware';
 
@@ -65,6 +67,25 @@ router.post('/werss/refresh', asyncHandler(async (_req, res) => { res.json(await
 router.post('/wechat-article', asyncHandler(async (req, res) => {
   res.json(await importWechatArticle(wechatImportSchema.parse(req.body)));
 }));
+router.get('/wechat-collection', asyncHandler(async (_req, res) => { res.json(await wechatCollectionStatus()); }));
+router.put('/wechat-collection', asyncHandler(async (req, res) => {
+  await configureWechatCollection(wechatCollectionSettings.parse(req.body));
+  res.json({ ok: true });
+}));
+router.post('/wechat-collection/scan', asyncHandler(async (_req, res) => {
+  res.set('Cache-Control', 'no-store').json(await startWechatScan());
+}));
+router.post('/wechat-collection/scan/:id', asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store').json(await pollWechatScan(z.uuid().parse(req.params.id)));
+}));
+router.delete('/wechat-collection/authorization', asyncHandler(async (_req, res) => {
+  await revokeWechatScan();
+  res.json({ ok: true });
+}));
+router.get('/wechat-collection/accounts', asyncHandler(async (req, res) => {
+  res.json(await searchWechatAccounts(z.string().trim().min(1).max(60).parse(req.query.q)));
+}));
+router.post('/wechat-collection/refresh', asyncHandler(async (_req, res) => { res.json(await refreshWechatCollection(true)); }));
 
 router.post('/screenshot-draft', express.raw({ type: ['image/png', 'image/jpeg'], limit: '8mb' }), asyncHandler(async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) throw new ApiError(400, '请选择 PNG 或 JPEG 活动截图');

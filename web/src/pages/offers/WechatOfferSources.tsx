@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, Card, Flex, Form, Input, Modal, Space, Spin, Switch, Typography, Upload } from 'antd';
+import { Alert, App, Button, Flex, Form, Input, Modal, Space, Spin, Switch, Typography, Upload } from 'antd';
 import { api } from '../../api/client';
 import { displayDate } from '../../lib/displayDate';
 import { useResource } from '../../lib/useResource';
@@ -12,7 +12,7 @@ interface ImportResult { updated: number; skipped: number; needsContent: boolean
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试';
 
-function WechatArticleImport({ close, onImported }: { close: () => void; onImported: () => void }) {
+export function WechatArticleImport({ close, onImported }: { close: () => void; onImported: () => void }) {
   const [form] = Form.useForm<ImportForm>();
   const [busy, setBusy] = useState(false);
   const [ocr, setOcr] = useState(false);
@@ -85,7 +85,6 @@ export function WechatOfferSources({ onImported }: { onImported: () => void }) {
   const [form] = Form.useForm<FeedSettings>();
   const { data, loading, error, refresh } = useResource<FeedState>(feedPath);
   const [busy, setBusy] = useState<'save' | 'sync'>();
-  const [importing, setImporting] = useState(false);
   useEffect(() => {
     if (data) form.setFieldsValue({ url: data.url, enabled: data.enabled || !data.url });
   }, [data, form]);
@@ -112,8 +111,7 @@ export function WechatOfferSources({ onImported }: { onImported: () => void }) {
     finally { await refresh(); setBusy(undefined); }
   }
 
-  return <Card size="small" title="WeRSS 公众号">
-    <Flex vertical gap={10}>
+  return <Flex vertical gap={10}>
       {error && <Alert type="error" title={error} />}
       {data?.error && <Alert type="warning" showIcon title={data.error} />}
       {loading && !data && <Spin />}
@@ -127,14 +125,11 @@ export function WechatOfferSources({ onImported }: { onImported: () => void }) {
           <Typography.Text>每日同步</Typography.Text>
           <Button htmlType="submit" loading={busy === 'save'} disabled={!data || Boolean(busy)}>保存订阅</Button>
           <Button loading={busy === 'sync'} disabled={!data?.url || Boolean(busy)} onClick={() => void sync()}>立即刷新</Button>
-          <Button onClick={() => setImporting(true)}>导入公众号文章</Button>
         </Space>
       </Form>
       <Typography.Text type="secondary">
         {data?.lastSuccess ? `最近成功 ${displayDate(data.lastSuccess, { time: true })}` : '尚未同步'}
         {data?.url && <> · <a href={new URL(data.url).origin} target="_blank" rel="noreferrer">打开 WeRSS</a></>}
       </Typography.Text>
-    </Flex>
-    {importing && <WechatArticleImport onImported={onImported} close={() => setImporting(false)} />}
-  </Card>;
+  </Flex>;
 }
