@@ -55,6 +55,20 @@ export class WechatAuthorizationExpired extends ApiError {
   constructor() { super(409, '公众号授权已失效，请重新用微信扫码'); }
 }
 
+const DEFAULT_RATE_LIMIT_PAUSE_MS = 15 * 60_000;
+
+export class WechatRateLimited extends ApiError {
+  constructor(readonly retryAt: Date) { super(429, '微信公众平台暂时限制了请求频率'); }
+
+  static fromResponse(response: Response, now = Date.now()) {
+    const header = response.headers.get('retry-after')?.trim() ?? '';
+    const deadline = /^\d+$/.test(header) ? now + Number(header) * 1_000 : Date.parse(header);
+    const retryAt = deadline > now && deadline < Date.UTC(9999, 0)
+      ? deadline : now + DEFAULT_RATE_LIMIT_PAUSE_MS;
+    return new WechatRateLimited(new Date(retryAt));
+  }
+}
+
 async function readJson(response: Response) {
   if (!response.ok) throw wxResponseError;
   try { return responseSchema.parse(JSON.parse(await boundedOfferDocument(response, 500_000))); }
@@ -65,10 +79,14 @@ async function authorizedRequest(credential: WechatCredential, path: string, que
   const session = { cookies: new Map(credential.cookies) };
   const response = await platformRequest(session, path, { ...query, ...jsonParams, token: credential.token });
   if (response.status === 401) throw new WechatAuthorizationExpired();
+  if (response.status === 429) {
+    await response.body?.cancel().catch(() => undefined);
+    throw WechatRateLimited.fromResponse(response);
+  }
   const result = await readJson(response);
   const info = result.base_resp;
   if (info?.ret === 200003 || /invalid session|not logged in|invalid token/i.test(info?.err_msg ?? '')) throw new WechatAuthorizationExpired();
-  if (info?.ret === 200013) throw new ApiError(429, '微信限制了更新频率，请稍后再试');
+  if (info?.ret === 200013) throw WechatRateLimited.fromResponse(response);
   if (info?.ret !== 0) throw wxResponseError;
   return result;
 }

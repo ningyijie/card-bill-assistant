@@ -10,7 +10,7 @@ import type { WechatOfferSubscription } from '../../generated/prisma/client';
 import { importWechatArticles, readWechatArticle, wechatArticleKey } from './wechat-source';
 import type { WechatArticle } from './wechat-articles';
 import { checkPlatformLogin, createPlatformLogin, findWechatAccounts, listWechatArticleLinks, wechatAccountSchema,
-  WechatAuthorizationExpired, wechatCredentialSchema } from './wechat-platform';
+  WechatAuthorizationExpired, wechatCredentialSchema, WechatRateLimited } from './wechat-platform';
 import type { PlatformLogin } from './wechat-platform';
 
 const id = 1;
@@ -26,12 +26,17 @@ function authorized(row: WechatOfferSubscription | null) {
   return Boolean(row?.credential && (!row.expiresAt || row.expiresAt.getTime() > Date.now()));
 }
 
+function rateLimitUntil(row: WechatOfferSubscription | null, now = Date.now()) {
+  return row?.retryAfter && row.retryAfter.getTime() > now ? row.retryAfter : null;
+}
+
 export async function wechatCollectionStatus() {
   const row = await prisma.wechatOfferSubscription.findUnique({ where: { id } });
   return {
     authorized: authorized(row), expiresAt: row?.expiresAt ?? null,
     account: row?.accountId && row.accountName ? { id: row.accountId, name: row.accountName } : null,
     enabled: row?.enabled ?? false, lastSuccess: row?.lastSuccess ?? null, error: row?.error ?? null,
+    retryAfter: rateLimitUntil(row),
   };
 }
 
@@ -94,11 +99,21 @@ async function markAuthorizationExpired(row: WechatOfferSubscription) {
   } });
 }
 
+async function rememberRateLimit(error: WechatRateLimited) {
+  await prisma.wechatOfferSubscription.updateMany({
+    where: { id, OR: [{ retryAfter: null }, { retryAfter: { lt: error.retryAt } }] },
+    data: { retryAfter: error.retryAt },
+  });
+}
+
 export async function searchWechatAccounts(query: string) {
   const row = await prisma.wechatOfferSubscription.findUnique({ where: { id } });
+  const retryAt = rateLimitUntil(row);
+  if (retryAt) throw new WechatRateLimited(retryAt);
   try { return await findWechatAccounts(getCredential(row), query); }
   catch (error) {
     if (row && error instanceof WechatAuthorizationExpired) await markAuthorizationExpired(row);
+    if (error instanceof WechatRateLimited) await rememberRateLimit(error);
     throw error;
   }
 }
@@ -127,6 +142,11 @@ async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
   const row = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
     const row = await tx.wechatOfferSubscription.findUnique({ where: { id } });
     if (!row?.accountId || !manual && (!row.enabled || !authorized(row) || row.lastAttempt && ymd(row.lastAttempt) === ymd(lastAttempt))) return null;
+    const retryAt = rateLimitUntil(row, lastAttempt.getTime());
+    if (retryAt) {
+      if (manual) throw new WechatRateLimited(retryAt);
+      return null;
+    }
     await tx.wechatOfferSubscription.update({ where: { id }, data: { lastAttempt } });
     return { ...row, accountId: row.accountId };
   }, { isolationLevel: 'Serializable' }));
@@ -151,6 +171,7 @@ async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
     } });
     return { updated: imported.updated, skipped: imported.skipped + links.length - remaining.length, missing };
   } catch (error) {
+    if (error instanceof WechatRateLimited) await rememberRateLimit(error);
     if (error instanceof WechatAuthorizationExpired) await markAuthorizationExpired(row);
     else await prisma.wechatOfferSubscription.updateMany({ where: match, data: {
       error: error instanceof ApiError ? error.message : '公众号同步失败，请稍后重试',

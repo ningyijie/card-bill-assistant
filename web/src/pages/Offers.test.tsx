@@ -111,3 +111,16 @@ it('内置公众号授权后可直接搜索并订阅，无需填写 RSS', async 
   expect(read).toHaveBeenCalledWith('/api/offers/wechat-collection/accounts?' + new URLSearchParams({ q: '卡羊腿' }).toString());
   expect(await screen.findByRole('switch', { name: '公众号每日同步' })).toBeTruthy();
 });
+
+it('微信限频时提示可重试时间，同时保留手动导入', async () => {
+  const collection = { account: { id: 'MzE=', name: '卡羊腿' }, authorized: true, enabled: true, expiresAt: null,
+    retryAfter: new Date(Date.now() + 60_000).toISOString(), lastSuccess: null, error: null };
+  vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/wechat-collection') ? collection
+    : url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
+  expect(await screen.findByText(/后再试。等待期间可以手动导入文章/)).toBeTruthy();
+  expect((screen.getByRole('button', { name: '立即刷新' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByLabelText('搜索公众号') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: '导入公众号文章' }) as HTMLButtonElement).disabled).toBe(false);
+});

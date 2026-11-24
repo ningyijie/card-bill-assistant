@@ -183,6 +183,7 @@ model WechatOfferSubscription {
   enabled       Boolean   @default(false)
   lastAttempt   DateTime?
   lastSuccess   DateTime?
+  retryAfter    DateTime?
   error         String?   @db.VarChar(255)
 }
 
