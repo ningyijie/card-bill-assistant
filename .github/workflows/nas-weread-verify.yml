@@ -1,0 +1,44 @@
+name: Verify WeRead sync in default Docker
+on:
+  push:
+    branches: [verify/nas-weread-012]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the NAS image
+        run: docker build --tag nas-weread-verify .
+      - name: Sync and deduplicate through MySQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create nas-weread-verify
+          docker run -d --name verify-db --network nas-weread-verify \
+            -e MYSQL_ROOT_PASSWORD=verify-root \
+            -e MYSQL_DATABASE=due_reminder \
+            -e MYSQL_USER=reminder \
+            -e MYSQL_PASSWORD=verify-password \
+            mysql:8.4 --lower-case-table-names=1
+          ready=false
+          for attempt in $(seq 1 45); do
+            if docker exec verify-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT 1"' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then docker logs verify-db; exit 1; fi
+          docker run --rm --network nas-weread-verify \
+            -e DATABASE_URL=mysql://reminder:verify-password@verify-db:3306/due_reminder \
+            --entrypoint sh nas-weread-verify -c './node_modules/.bin/prisma migrate deploy'
+          docker run --rm -i --network nas-weread-verify \
+            -e DATABASE_URL=mysql://reminder:verify-password@verify-db:3306/due_reminder \
+            -e WECHAT_ARTICLE_CHROMIUM=/nonexistent/chromium \
+            -e ENCRYPTION_KEY=2121212121212121212121212121212121212121212121212121212121212121 \
+            --entrypoint node nas-weread-verify \
+            --import ./node_modules/tsx/dist/loader.mjs --input-type=module - \
+            < .github/nas-weread-smoke.mjs
