@@ -149,25 +149,26 @@ function unwrap(value: unknown) {
   try { return JSON.parse(value) as unknown; } catch { return undefined; }
 }
 
-export function wechatArticleLinks(value: unknown) {
+function wechatArticleEntries(value: unknown) {
   const page = z.object({ publish_list: z.array(z.object({ publish_info: z.unknown() })).optional(), total_count: z.coerce.number().optional() })
     .safeParse(unwrap(value));
   if (!page.success || !page.data.publish_list && page.data.total_count !== 0) throw wxResponseError;
   const list = page.data.publish_list ?? [];
-  const articleLinks = new Set<string>();
+  const articles = new Map<string, { url: string; title?: string }>();
   for (const item of list.slice(0, 5)) {
-    const entry = z.object({ appmsgex: z.array(z.object({ link: z.string() })).optional() }).safeParse(unwrap(item.publish_info));
+    const entry = z.object({ appmsgex: z.array(z.object({ link: z.string(), title: z.unknown().optional() })).optional() }).safeParse(unwrap(item.publish_info));
     for (const article of entry.success ? entry.data.appmsgex ?? [] : []) {
       const url = articleUrlSchema.safeParse(article.link);
-      if (url.success) articleLinks.add(url.data);
+      const title = typeof article.title === 'string' ? article.title.trim() : undefined;
+      if (url.success && !articles.get(url.data)?.title) articles.set(url.data, { url: url.data, title });
     }
   }
-  return [...articleLinks].slice(0, 12);
+  return [...articles.values()].slice(0, 12);
 }
 
-export async function listWechatArticleLinks(credential: WechatCredential, accountId: string) {
+export async function listWechatArticles(credential: WechatCredential, accountId: string) {
   const result = await authorizedRequest(credential, '/cgi-bin/appmsgpublish', {
     sub: 'list', sub_action: 'list_ex', begin: '0', count: '5', fakeid: accountId,
   });
-  return wechatArticleLinks(result.publish_page);
+  return wechatArticleEntries(result.publish_page);
 }

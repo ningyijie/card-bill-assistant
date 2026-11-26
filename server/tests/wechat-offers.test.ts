@@ -3,21 +3,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => ({
   appSetting: { findUnique: vi.fn(), upsert: vi.fn() }, rewardSource: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   card: { findMany: vi.fn() }, rewardOffer: { findFirst: vi.fn(), findMany: vi.fn() }, $transaction: vi.fn(),
+  wechatSyncRun: { create: vi.fn(), findMany: vi.fn() },
   wechatOfferSubscription: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
 }));
 const saveDraft = vi.hoisted(() => vi.fn());
 const browser = vi.hoisted(() => ({ read: vi.fn(), close: vi.fn(), unavailable: false }));
 vi.mock('../src/lib/prisma', () => ({ prisma: db }));
-vi.mock('../src/modules/offers/service', () => ({ knownOfferMerchants: async () => ['奈雪', '海底捞'], saveOfferInTransaction: saveDraft }));
+vi.mock('../src/modules/offers/service', () => ({
+  knownOfferMerchants: async () => ['奈雪', '海底捞'],
+  rewardCards: async () => {
+    const rows: Partial<RewardCard>[] = await db.card.findMany() ?? [];
+    return rows.map((row, index) => ({ id: index + 1, displayLast4: '1234', nickname: null, profile: {}, ...row }));
+  },
+  saveOfferInTransaction: saveDraft,
+}));
 vi.mock('../src/modules/offers/wechat-browser', () => ({ createWechatArticleBrowser: () => browser }));
 
 import { articleDrafts, articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from '../src/modules/offers/wechat-articles';
 import { importWechatArticle, refreshWechatFeed, wechatArticleKey, wechatImportSchema } from '../src/modules/offers/wechat-source';
 import { pollWechatScan, refreshWechatCollection, searchWechatAccounts, startWechatScan, wechatCollectionStatus } from '../src/modules/offers/wechat-collection';
-import { findWechatAccounts, listWechatArticleLinks } from '../src/modules/offers/wechat-platform';
+import { findWechatAccounts, listWechatArticles } from '../src/modules/offers/wechat-platform';
+import { listWechatSyncRuns } from '../src/modules/offers/wechat-sync-runs';
 import { configureWereadCollection, refreshWereadCollection, wereadCollectionStatus,
   wereadSettings } from '../src/modules/offers/wechat-weread-collection';
 import { decrypt, encrypt } from '../src/lib/crypto';
+import type { RewardCard } from '../src/modules/offers/compare';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
@@ -115,7 +125,7 @@ describe('内置公众号采集', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-24T12:00:00Z'));
     const credential = { token: '123', cookies: [['slave_sid', 'mock']] as [string, string][] };
-    const article = JSON.stringify({ appmsgex: [{ link: `${url}?from=share` }, { link: url }, { link: 'https://example.org/article' }] });
+    const article = JSON.stringify({ appmsgex: [{ link: `${url}?from=share` }, { link: url, title: '公众号活动' }, { link: 'https://example.org/article' }] });
     const fetch = vi.fn()
       .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, list: [{ fakeid: 'MzE=', nickname: '卡羊腿' }] }))
       .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: JSON.stringify({ publish_list: [{ publish_info: article }] }) }))
@@ -123,10 +133,10 @@ describe('内置公众号采集', () => {
       .mockResolvedValueOnce(Response.json({ base_resp: { ret: 200003 } }));
     vi.stubGlobal('fetch', fetch);
     await expect(findWechatAccounts(credential, '卡羊腿')).resolves.toEqual([{ id: 'MzE=', name: '卡羊腿' }]);
-    await expect(listWechatArticleLinks(credential, 'MzE=')).resolves.toEqual([url]);
+    await expect(listWechatArticles(credential, 'MzE=')).resolves.toEqual([{ url, title: '公众号活动' }]);
     expect(new URL(String(fetch.mock.calls[1][0])).searchParams.get('fakeid')).toBe('MzE=');
-    await expect(listWechatArticleLinks(credential, 'MzE=')).rejects.toMatchObject({ status: 429, retryAt: new Date('2026-11-24T12:15:00Z') });
-    await expect(listWechatArticleLinks(credential, 'MzE=')).rejects.toMatchObject({ status: 409 });
+    await expect(listWechatArticles(credential, 'MzE=')).rejects.toMatchObject({ status: 429, retryAt: new Date('2026-11-24T12:15:00Z') });
+    await expect(listWechatArticles(credential, 'MzE=')).rejects.toMatchObject({ status: 409 });
   });
 
   it('微信限频时保存 Retry-After，期间阻止刷新和搜索，并保留扫码授权', async () => {
@@ -147,6 +157,9 @@ describe('内置公众号采集', () => {
     vi.stubGlobal('fetch', fetch);
 
     await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 429, retryAt });
+    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
+      source: 'platform', trigger: 'manual', report: expect.objectContaining({ status: 'limited', articles: [] }),
+    }) });
     await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: retryAt });
     await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 429, retryAt });
     await expect(searchWechatAccounts('卡羊腿')).rejects.toMatchObject({ status: 429, retryAt });
@@ -175,6 +188,11 @@ describe('WeRSS 入库与补录', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(feed)));
     await expect(refreshWechatFeed(true)).resolves.toEqual({ updated: 2, skipped: 0, missing: 1 });
     expect(saveDraft).toHaveBeenCalledTimes(2);
+    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
+      source: 'werss', report: expect.objectContaining({ status: 'partial', articles: [
+        expect.objectContaining({ state: 'drafted', drafts: 2 }), expect.objectContaining({ state: 'missing', title: '空正文' }),
+      ] }),
+    }) });
     expect(saveDraft.mock.calls.map(([, , review]) => review)).toEqual(['draft', 'draft']);
     db.rewardOffer.findFirst.mockResolvedValue({ id: 1 });
     const pasted = wechatImportSchema.parse({ url: `${url}?from=share`, text: '海底捞优惠，满 200 元减 50 元' });
@@ -191,6 +209,75 @@ describe('WeRSS 入库与补录', () => {
     expect(fetch).not.toHaveBeenCalled();
     await expect(importWechatArticle({ url })).resolves.toMatchObject({ needsContent: true, updated: 0 });
     expect(saveDraft).not.toHaveBeenCalled();
+  });
+
+  it('AI 合并相同优惠，只保存有依据且匹配本地持卡产品和卡组织的规则', async () => {
+    vi.stubEnv('OFFERS_OLLAMA_URL', 'http://ollama:11434');
+    vi.stubEnv('OFFERS_OLLAMA_MODEL', 'mock-model');
+    db.card.findMany.mockResolvedValue([
+      { id: 21, bankName: '华夏银行', nickname: '私人别名', profile: { product: 'UP信用卡', network: '万事达', upGold: 233 } },
+      { id: 22, bankName: '华夏银行', profile: { product: 'Safari卡', network: '万事达' } },
+      { id: 23, bankName: '华夏银行', profile: { product: 'UP卡', network: 'Visa' } },
+      { id: 24, bankName: '华夏银行', profile: { product: 'UP卡' } },
+    ]);
+    const evidence = '华夏银行 UP卡（万事达）专享：2026年12月1日至2026年12月31日，奈雪订单实付达40元，返现比例为5%，封顶8元。领取路径：华彩生活 → 奈雪优惠。';
+    const otherBank = '平安银行信用卡在星巴克满30元减10元。';
+    const offer = { title: '奈雪满40返5%', firstLine: 2, lastLine: 2, scope: 'restricted', bankName: '华夏银行', product: 'UP卡', network: '万事达',
+      merchants: ['奈雪'], startsOn: '2026-12-01', endsOn: '2026-12-31', threshold: 40,
+      discount: { type: 'cashback', rate: 5, cap: 8 }, entry: '华彩生活 → 奈雪优惠' };
+    const reply = { offers: [offer, { ...offer, title: '华夏卡奈雪8元立减' },
+      { ...offer, discount: { type: 'fixed', amount: 100 } },
+      { ...offer, product: 'Safari卡' },
+      { ...offer, scope: 'bank', product: undefined, network: undefined },
+      { ...offer, firstLine: 3, lastLine: 3, title: '星巴克立减', scope: 'bank', bankName: '平安银行', product: undefined,
+        network: undefined, merchants: ['星巴克'], startsOn: undefined, endsOn: undefined, threshold: 30, discount: { type: 'fixed', amount: 10 } },
+    ] };
+    const fetch = vi.fn(async (_url: URL, _init: RequestInit) => Response.json({ message: { content: JSON.stringify(reply) } }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(importWechatArticle({ url, title: '银行优惠汇总', text: `${evidence}\n${otherBank}` }))
+      .resolves.toEqual({ updated: 1, skipped: 0, needsContent: false });
+    expect(saveDraft).toHaveBeenCalledExactlyOnceWith(db, expect.objectContaining({ title: offer.title, cardIds: [21],
+      merchants: ['奈雪'], bankName: '华夏银行', product: 'UP信用卡', network: '万事达', threshold: 40, endsOn: '2026-12-31',
+      discount: offer.discount, entry: offer.entry, needsEligibility: true,
+    }), 'draft', undefined, expect.anything());
+    expect(String(fetch.mock.calls[0][0])).toBe('http://ollama:11434/api/chat');
+    const payload = JSON.parse(String(fetch.mock.calls[0][1].body));
+    expect(JSON.parse(payload.messages[1].content)).toEqual({ text: `1: 银行优惠汇总\n2: ${evidence}\n3: ${otherBank}` });
+    expect(String(fetch.mock.calls[0][1].body)).not.toContain('私人别名');
+  });
+
+  it('模型暂不可用时退回发卡行规则，排除产品限定优惠和未持卡银行', async () => {
+    vi.stubEnv('OFFERS_OLLAMA_URL', 'http://ollama:11434');
+    vi.stubEnv('OFFERS_OLLAMA_MODEL', 'mock-model');
+    db.card.findMany.mockResolvedValue([{ id: 21, bankName: '华夏银行', profile: { product: 'Safari卡' } }]);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unavailable', { status: 503 })));
+    const text = '# 华夏银行信用卡奈雪优惠\n奈雪满40元立减8元。\n# 华夏银行 UP卡专享\n喜茶满50元减20元。\n# 平安银行星巴克信用卡优惠\n满30元减10元。';
+    await expect(importWechatArticle({ url, title: '信用卡活动汇总', text })).resolves.toMatchObject({ updated: 1 });
+    expect(saveDraft).toHaveBeenCalledExactlyOnceWith(db, expect.objectContaining({ cardIds: [21], merchants: ['奈雪'],
+      discount: { type: 'fixed', amount: 8 } }), 'draft', undefined, expect.anything());
+  });
+
+  it.each([
+    ['奈雪满40元立减8元', '奈雪满40元减8元', '满40元减8元', { type: 'fixed', amount: 8 }],
+    ['奈雪单笔满100元返现5%，最高返20元', '奈雪满100元返现5%，最高返20元',
+      '满100元返现5%，最高返20元', { type: 'cashback', rate: 5, cap: 20 }],
+  ] as const)('保留原文优惠条件并整理短标题：%s', async (terms, title, summary, discount) => {
+    vi.stubEnv('OFFERS_OLLAMA_URL', 'http://ollama:11434');
+    vi.stubEnv('OFFERS_OLLAMA_MODEL', 'mock-model');
+    db.card.findMany.mockResolvedValue([
+      { id: 21, bankName: '华夏银行', profile: { product: 'UP信用卡', network: '万事达' } },
+      { id: 22, bankName: '华夏银行', profile: { product: 'UP信用卡', network: 'Visa' } },
+    ]);
+    const fetch = vi.fn(async (_url: URL, _init: RequestInit) => Response.json({ message: { content: JSON.stringify({ titles: [title] }) } }));
+    vi.stubGlobal('fetch', fetch);
+    const text = `华夏银行 UP卡（万事达）专享。${terms}。2026年12月1日至2026年12月31日。领取路径：华彩生活→奈雪专区。`;
+    await expect(importWechatArticle({ url, title: '银行优惠汇总', text })).resolves.toMatchObject({ updated: 1 });
+    expect(saveDraft).toHaveBeenCalledExactlyOnceWith(db, expect.objectContaining({ title, discount,
+      cardIds: [21], endsOn: '2026-12-31', entry: '华彩生活→奈雪专区',
+    }), 'draft', undefined, expect.anything());
+    const payload = JSON.parse(String(fetch.mock.calls[0][1].body));
+    expect(payload.options.num_predict).toBe(40);
+    expect(JSON.parse(payload.messages[1].content)).toEqual({ offers: [`华夏银行 · 奈雪 · ${summary}`] });
   });
 });
 
@@ -209,7 +296,7 @@ describe('微信读书定时同步频率', () => {
     db.wechatOfferSubscription.update.mockImplementation(async ({ data }) => Object.assign(row, data));
     db.$transaction.mockImplementation(async (run) => run(db));
     db.rewardOffer.findMany.mockResolvedValue([{ sourceKey: wechatArticleKey(url) + 'example' }]);
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ reviews: [{ subReviews: [{ review: {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ hasMore: false, reviews: [{ subReviews: [{ review: {
       reviewId: bookId + '_example_offer_A', mpInfo: { title: '活动标题' },
     } }] }] })));
   });
@@ -252,7 +339,7 @@ describe('微信读书定时同步频率', () => {
 
   it('微信读书缺正文时补读公开原文，保存草稿并跳过已导入的文章', async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockResolvedValueOnce(Response.json({ reviews: [{ review: {
+    fetch.mockResolvedValueOnce(Response.json({ hasMore: false, reviews: [{ review: {
       reviewId: bookId + '_example_offer_A', mpInfo: { title: '海底捞活动' },
     } }] }));
     fetch.mockResolvedValueOnce(new Response("<script>var data={content_noencode:'仅供分享的摘要'}</script>"));
@@ -290,4 +377,72 @@ describe('微信读书定时同步频率', () => {
       sourceUrl: url, threshold: 200, discount: { type: 'fixed', amount: 50 },
     }), 'draft', undefined, expect.anything());
   });
+
+  it('跨页获取多篇，同一批次和已入库文章按原文去重', async () => {
+    const review = (token: string) => ({ reviewId: `${bookId}_${token}` });
+    const fetch = vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(Response.json({ reviews: [{ review: review('example_offer_A'),
+        subReviews: [{ review: review('example_offer_B') }] }], hasMore: true }))
+      .mockResolvedValueOnce(Response.json({ reviews: [{ review: review('example_offer_B') },
+        { review: review('example_offer_C') }], hasMore: false }))
+      .mockResolvedValueOnce(new Response(imagePost))
+      .mockResolvedValueOnce(new Response(imagePost));
+    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 2 });
+    db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
+
+    await expect(refreshWereadCollection(true, at(8))).resolves.toMatchObject({
+      discovered: 3, updated: 2, skipped: 1, missing: 0, latestOnly: false,
+    });
+    const requests = fetch.mock.calls.map(([input]) => new URL(String(input)));
+    expect(requests.map((request) => request.searchParams.get('offset') ?? request.searchParams.get('reviewId')))
+      .toEqual(['0', '1', `${bookId}_example_offer_B`, `${bookId}_example_offer_C`]);
+    expect(saveDraft).toHaveBeenCalledTimes(2);
+    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
+      source: 'weread', accountName: '卡羊腿', report: expect.objectContaining({ status: 'completed', articles: [
+        expect.objectContaining({ url, state: 'duplicate' }),
+        expect.objectContaining({ state: 'drafted', title: '中信活动' }),
+        expect.objectContaining({ state: 'drafted', title: '中信活动' }),
+      ] }),
+    }) });
+  });
+
+  it.each(['同一公众号', '其他公众号', '限频中'])('单篇兜底时检查补充来源（%s）', async (scenario) => {
+    const weread = await db.wechatOfferSubscription.findUnique();
+    const platformId = Buffer.from('3209006872').toString('base64');
+    const platform = { ...weread, accountId: scenario === '其他公众号' ? 'MzE=' : platformId,
+      retryAfter: scenario === '限频中' ? new Date(Date.now() + 120_000) : null,
+      credential: encrypt(Buffer.from('21'.repeat(32), 'hex'), JSON.stringify({ token: '123', cookies: [] })) };
+    db.wechatOfferSubscription.findUnique.mockImplementation(async ({ where }) => where.id === 1 ? platform : weread);
+    db.wechatOfferSubscription.update.mockImplementation(async ({ where, data }) => Object.assign(where.id === 1 ? platform : weread, data));
+    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 1 });
+    db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
+    const otherUrl = 'https://mp.weixin.qq.com/s/example_offer_B';
+    const fetch = vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(Response.json({ errCode: -2041 }))
+      .mockResolvedValueOnce(Response.json({ reviewId: bookId + '_example_offer_A' }))
+      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: JSON.stringify({
+        publish_list: [{ publish_info: JSON.stringify({ appmsgex: [{ link: url + '?from=share' }, { link: otherUrl }] }) }],
+      }) }))
+      .mockResolvedValueOnce(new Response(imagePost));
+
+    const result = await refreshWereadCollection(true, at(8));
+    expect(result).toMatchObject({ discovered: 1, skipped: 1, latestOnly: true });
+    if (scenario === '同一公众号') {
+      expect(result.supplement).toEqual({ discovered: 2, updated: 1, skipped: 1, missing: 0 });
+      expect(saveDraft).toHaveBeenCalledTimes(1);
+      expect(String(fetch.mock.calls[3][0])).toBe(otherUrl);
+    } else {
+      expect(result.supplement).toBeUndefined();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(saveDraft).not.toHaveBeenCalled();
+    }
+  });
+});
+
+it('同步历史支持按来源向前翻页', async () => {
+  const rows = Array.from({ length: 11 }, (_, index) => ({ id: 50 - index }));
+  db.wechatSyncRun.findMany.mockResolvedValue(rows);
+  await expect(listWechatSyncRuns({ source: 'weread', before: 51 })).resolves.toEqual({ runs: rows.slice(0, 10), nextBefore: 41 });
+  expect(db.wechatSyncRun.findMany).toHaveBeenLastCalledWith({ where: { source: 'weread', id: { lt: 51 } },
+    orderBy: { id: 'desc' }, take: 11 });
 });

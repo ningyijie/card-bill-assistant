@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { ApiError } from '../../lib/errors';
 import { boundedOfferDocument } from './sources';
@@ -153,24 +154,32 @@ function articleLink(bookId: string, reviewId: unknown, originalId?: unknown, ti
 }
 
 async function listOnce(credential: WereadCredential, bookId: string) {
-  const response = await request(credential, '/web/mp/articles', { bookId, offset: '0' });
-  if (response?.ok) {
-    const data = await readJson(response);
-    if (errorCode(data) === 0 && Array.isArray(data.reviews) && data.reviews.length) {
-      const found = new Map<string, ArticleLink>();
-      for (const group of data.reviews.slice(0, 20).map(record)) {
-        const reviews = Array.isArray(group.subReviews) ? group.subReviews.map(record) : [];
-        if (group.review) reviews.unshift({ review: group.review });
-        for (const item of reviews) {
-          const review = record(item.review ?? item);
-          const info = record(review.mpInfo);
-          const link = articleLink(bookId, review.reviewId ?? item.reviewId, info.originalId, info.title ?? review.title);
-          if (link) found.set(link.url, link);
-        }
+  const found = new Map<string, ArticleLink>();
+  const maxArticles = 16;
+  let offset = 0;
+  for (let page = 0; page < 3 && found.size < maxArticles; page++) {
+    if (page > 0) await delay(1_000);
+    const response = await request(credential, '/web/mp/articles', { bookId, offset: String(offset) });
+    const data = await readJson(response).catch(() => undefined);
+    if (!data || errorCode(data) !== 0 || !Array.isArray(data.reviews)) break;
+    const priorCount = found.size;
+    for (const group of data.reviews.map(record)) {
+      const reviews = Array.isArray(group.subReviews) ? group.subReviews.map(record) : [];
+      if (group.review) reviews.unshift({ review: group.review });
+      for (const item of reviews) {
+        const review = record(item.review ?? item);
+        const info = record(review.mpInfo);
+        const link = articleLink(bookId, review.reviewId ?? item.reviewId, info.originalId, info.title ?? review.title);
+        if (link && !found.has(link.url)) found.set(link.url, link);
+        if (found.size === maxArticles) break;
       }
-      if (found.size) return { articles: [...found.values()].slice(0, 16), latestOnly: false };
+      if (found.size === maxArticles) break;
     }
-  } else await response?.body?.cancel().catch(() => {});
+    if (found.size === priorCount || data.hasMore === false || data.hasMore === 0) break;
+    // The offset counts publication groups. Each group can contain several articles.
+    offset += data.reviews.length;
+  }
+  if (found.size) return { articles: [...found.values()], latestOnly: false };
   const coverResponse = await request(credential, '/api/mp/cover', { bookId });
   if ([401, 403].includes(coverResponse?.status ?? 0)) {
     await coverResponse?.body?.cancel().catch(() => {});

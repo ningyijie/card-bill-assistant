@@ -9,7 +9,10 @@ import { withTransactionRetry } from '../../parsers/pipeline';
 import type { Prisma, WechatOfferSubscription } from '../../generated/prisma/client';
 import type { WechatArticle } from './wechat-articles';
 import { createWechatArticleBrowser } from './wechat-browser';
-import { importedWechatArticles, importWechatArticles, wechatArticleKey } from './wechat-source';
+import { refreshWechatCollection } from './wechat-collection';
+import { describeWechatArticles, importedWechatArticles, importWechatArticles, wechatArticleKey } from './wechat-source';
+import { recordWechatSyncRun } from './wechat-sync-runs';
+import type { WechatSyncRunContext } from './wechat-sync-runs';
 import { checkWereadLogin, listWereadArticles, readWereadArticle, startWereadLogin, wereadBookIdSchema,
   WereadAuthorizationExpired, wereadCredentialSchema, WereadRateLimited } from './wechat-weread';
 import type { WereadLogin } from './wechat-weread';
@@ -23,7 +26,8 @@ const syncHoursSchema = z.union([z.literal(24), z.literal(12), z.literal(6), z.l
 type ScanStatus = 'waiting' | 'scanned' | 'otp' | 'expired' | 'authorized';
 type ScanResult = { status: ScanStatus; rejected?: boolean };
 type ActiveScan = WereadLogin & { id: string; expiresAt: number; result: ScanResult; lastPoll: number };
-type SyncResult = { discovered: number; updated: number; skipped: number; missing: number; latestOnly: boolean };
+type CollectionCounts = { discovered: number; updated: number; skipped: number; missing: number };
+type SyncResult = CollectionCounts & { latestOnly: boolean; supplement?: CollectionCounts };
 
 let scan: ActiveScan | undefined;
 let starting: ReturnType<typeof createScan> | undefined;
@@ -146,11 +150,15 @@ async function collect(manual: boolean, lastAttempt: Date): Promise<SyncResult> 
   }, { isolationLevel: 'Serializable' }));
   if (!row) return empty;
   const match = { ...where, accountId: row.accountId, authorizedAt: row.authorizedAt, lastAttempt };
+  const history: WechatSyncRunContext = { source: 'weread', accountName: row.accountName || row.accountId,
+    trigger: manual ? 'manual' : 'scheduled', startedAt: lastAttempt };
+  let listed: Awaited<ReturnType<typeof listWereadArticles>>['articles'] = [];
   const browser = createWechatArticleBrowser();
   try {
     const raw = decrypt(config.encryptionKey, row.credential);
     const credential = wereadCredentialSchema.parse(JSON.parse(raw));
     const { articles, latestOnly } = await listWereadArticles(credential, row.accountId);
+    listed = articles;
     const imported = await importedWechatArticles(articles.map(({ url }) => url));
     const remaining = articles.filter(({ url }) => !imported.has(wechatArticleKey(url)));
     const content: WechatArticle[] = [];
@@ -174,13 +182,24 @@ async function collect(manual: boolean, lastAttempt: Date): Promise<SyncResult> 
       ...(updated === raw ? {} : { credential: encrypt(config.encryptionKey, updated) }),
       ...(content.length || !missing ? { lastSuccess: new Date() } : {}),
     } });
-    return { discovered: articles.length, updated: result.updated, skipped: result.skipped + articles.length - remaining.length, missing, latestOnly };
+    const counts = { discovered: articles.length, updated: result.updated, skipped: result.skipped + articles.length - remaining.length, missing };
+    await recordWechatSyncRun(history, { ...counts, status: warning ? 'partial' : 'completed', message: warning || null,
+      articles: describeWechatArticles(articles, result.outcomes, imported) });
+    // The platform uses the same numeric publisher ID encoded as __biz. Its daily task already runs separately.
+    const platformId = Buffer.from(row.accountId.slice('MP_WXS_'.length)).toString('base64');
+    const supplement = manual && latestOnly
+      ? await refreshWechatCollection(false, platformId).catch(() => undefined)
+      : undefined;
+    return { ...counts, latestOnly, ...(supplement?.discovered ? { supplement } : {}) };
   } catch (error) {
     const reason = error instanceof ApiError ? error : new ApiError(502, '微信读书同步失败，请稍后重试');
     await prisma.wechatOfferSubscription.updateMany({ where: match, data: { error: reason.message,
       ...(reason instanceof WereadRateLimited ? { retryAfter: reason.retryAt } : {}),
       ...(reason instanceof WereadAuthorizationExpired ? { credential: null, expiresAt: new Date() } : {}),
     } });
+    await recordWechatSyncRun(history, { ...empty, discovered: listed.length, status: reason instanceof WereadRateLimited ? 'limited' : 'failed',
+      ...(reason instanceof WereadRateLimited ? { retryAfter: reason.retryAt.toISOString() } : {}),
+      message: reason.message, articles: listed.map((item) => ({ ...item, state: 'unprocessed' })) });
     if (manual) throw reason;
     return empty;
   } finally {

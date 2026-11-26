@@ -120,7 +120,7 @@ export function parseWechatFeed(xml: string) {
   if (!channel || !['channel', 'feed'].includes(channel.name)) throw new Error('该地址没有返回有效的 RSS 或 Atom 订阅');
 
   const articles: WechatArticle[] = [];
-  let missing = 0;
+  const missingArticles: { url?: string; title?: string }[] = [];
   for (const item of channel.children.filter(DomUtils.isTag)) {
     if (!['item', 'entry'].includes(item.name)) continue;
     const fields = item.children.filter(DomUtils.isTag);
@@ -135,9 +135,9 @@ export function parseWechatFeed(xml: string) {
     const body = field('content:encoded') || field('content');
     const text = textFromHtml(body.startsWith('<![CDATA[') && body.endsWith(']]>') ? body.slice(9, -3) : body);
     if (url && title && text) articles.push({ url, title, text });
-    else missing++;
+    else missingArticles.push({ url, title });
   }
-  return { articles, missing };
+  return { articles, missing: missingArticles.length, missingArticles };
 }
 
 const bankAliases: Record<string, string> = {
@@ -149,6 +149,28 @@ const bankAliases: Record<string, string> = {
   光大银行: '光大银行|光大信用卡|光大卡', 浦发银行: '浦发银行|浦发信用卡|浦发卡',
   民生银行: '民生银行|民生信用卡|民生卡', 北京银行: '北京银行', 上海银行: '上海银行',
 };
+
+export function wechatBanksIn(text: string, otherBanks: string[] = []) {
+  const content = normalizedName(text);
+  return [...new Set([...Object.keys(bankAliases), ...otherBanks])].filter((bank) =>
+    (bankAliases[bank] ?? bank).split('|').some((alias) => content.includes(normalizedName(alias))));
+}
+
+export function statedWechatDiscount(text: string) {
+  const compact = text.normalize('NFKC').replace(/\s+/g, '');
+  const matches = [
+    ...[...compact.matchAll(/满(\d{1,6}(?:\.\d{1,2})?)元?(?:立减|减)(\d{1,6}(?:\.\d{1,2})?)元/g)]
+      .map(([, threshold, amount]) => ({ threshold: Number(threshold), discount: { type: 'fixed' as const, amount: Number(amount) } })),
+    ...[...compact.matchAll(/满(\d{1,6}(?:\.\d{1,2})?)元?随机(?:立)?减(?:最高|至多)(\d{1,6}(?:\.\d{1,2})?)元/g)]
+      .map(([, threshold, max]) => ({ threshold: Number(threshold), discount: { type: 'random' as const, max: Number(max) } })),
+    ...[...compact.matchAll(/满(\d{1,6}(?:\.\d{1,2})?)元?返现(\d{1,3}(?:\.\d{1,2})?)%(?:[，,、]?(?:最高|至多)(?:返现?|可返现?)?(\d{1,6}(?:\.\d{1,2})?)元)?/g)]
+      .map(([, threshold, rate, cap]) => ({ threshold: Number(threshold),
+        discount: { type: 'cashback' as const, rate: Number(rate), cap: cap === undefined ? undefined : Number(cap) } })),
+  ];
+  const first = matches[0];
+  if (first && matches.every((match) => JSON.stringify(match) === JSON.stringify(first))) return first;
+  return undefined;
+}
 
 export function articleDrafts(article: WechatArticle, ownedBanks: string[], knownMerchants: string[], automatic = false) {
   const banks = [...new Set([...Object.keys(bankAliases), ...ownedBanks])];
@@ -180,15 +202,9 @@ export function articleDrafts(article: WechatArticle, ownedBanks: string[], know
     const title = section.length && (chosen.length > 1 || heading.test(section[0]))
       ? section[0].replace(heading, '').trim() || article.title : article.title;
     const merchants = knownMerchants.filter((name) => content.includes(normalizedName(name))).slice(0, 16);
-    const compact = text.normalize('NFKC').replace(/\s+/g, '');
-    const fixed = compact.match(/满(\d{1,6}(?:\.\d{1,2})?)元?(?:立减|减)(\d{1,6}(?:\.\d{1,2})?)元/);
-    const random = compact.match(/满(\d{1,6}(?:\.\d{1,2})?)元?随机(?:立)?减(?:最高|至多)(\d{1,6}(?:\.\d{1,2})?)元/);
-    const match = random ?? fixed;
-    const amount = match ? Number(match[2]) : 0;
     const common = { title: title.slice(0, 120), kind: 'activity', bankName, merchants,
       sourceUrl: article.url, sourceText: text, needsEligibility: true };
-    const parsed = offerSchema.safeParse({ ...common, threshold: amount > 0 ? Number(match![1]) : undefined,
-      discount: amount > 0 ? (random ? { type: 'random', max: amount } : { type: 'fixed', amount }) : { type: 'service' } });
+    const parsed = offerSchema.safeParse({ ...common, ...(statedWechatDiscount(text) ?? { discount: { type: 'service' } }) });
     return parsed.success ? [{ rule: parsed.data, fingerprint: createHash('sha256').update(text).digest('hex') }] : [];
   });
 }

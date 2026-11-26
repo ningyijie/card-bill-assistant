@@ -6,10 +6,14 @@ import { ApiError } from '../../lib/errors';
 import { ymd } from '../../lib/dates';
 import { withTransactionRetry } from '../../parsers/pipeline';
 import { commonOfferMerchants } from './intent';
-import { knownOfferMerchants, saveOfferInTransaction } from './service';
+import { ollamaEnabled } from './ollama';
+import { knownOfferMerchants, rewardCards, saveOfferInTransaction } from './service';
 import { boundedOfferDocument } from './sources';
-import { articleDrafts, articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from './wechat-articles';
+import { articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from './wechat-articles';
 import type { WechatArticle } from './wechat-articles';
+import { extractWechatCardOffers, matchWechatCardOffers, verifyWechatCardOffers } from './wechat-card-offers';
+import { recordWechatSyncRun } from './wechat-sync-runs';
+import type { WechatSyncArticle, WechatSyncRunContext } from './wechat-sync-runs';
 
 const stateKey = 'werss';
 const settingKey = 'offerWerssFeedUrl';
@@ -46,34 +50,56 @@ export async function importedWechatArticles(links: string[]) {
 }
 
 export async function importWechatArticles(items: WechatArticle[], isCurrent?: (tx: Prisma.TransactionClient) => Promise<boolean>) {
-  if (!items.length) return { updated: 0, skipped: 0 };
-  const [known, cards] = await Promise.all([knownOfferMerchants(), isCurrent
-    ? prisma.card.findMany({ where: { hidden: false, status: 'active' }, distinct: ['bankName'], select: { bankName: true } }) : []]);
+  const outcomes: WechatSyncArticle[] = [];
+  if (!items.length) return { updated: 0, skipped: 0, outcomes };
+  const [known, cards] = await Promise.all([knownOfferMerchants(), rewardCards()]);
   const merchants = [...new Set([...known, ...commonOfferMerchants])];
-  const ownedBanks = cards.map(({ bankName }) => bankName);
+  let useAi = cards.length > 0 && ollamaEnabled();
   let updated = 0;
   let skipped = 0;
   for (const article of items) {
     const prefix = wechatArticleKey(article.url);
-    const drafts = articleDrafts(article, ownedBanks, merchants, Boolean(isCurrent));
-    const count = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
-      if (isCurrent && !await isCurrent(tx)) return 0;
-      if (!drafts.length || await tx.rewardOffer.findFirst({ where: { sourceKey: { startsWith: prefix } }, select: { id: true } })) return 0;
+    const existing = { where: { sourceKey: { startsWith: prefix } }, select: { id: true } } as const;
+    if (await prisma.rewardOffer.findFirst(existing)) {
+      outcomes.push({ url: article.url, title: article.title, state: 'duplicate' });
+      skipped++;
+      continue;
+    }
+    const verified = cards.length ? verifyWechatCardOffers(article, cards, merchants) : { rules: [], complete: false };
+    const extracted = useAi ? await extractWechatCardOffers(article, verified.complete ? verified.rules : []) : null;
+    if (extracted === null) useAi = false;
+    const drafts = matchWechatCardOffers(extracted ?? verified.rules, cards);
+    const state = await withTransactionRetry(() => prisma.$transaction(async (tx): Promise<WechatSyncArticle['state']> => {
+      if (isCurrent && !await isCurrent(tx)) return 'unprocessed';
+      if (!drafts.length) return 'unmatched';
+      if (await tx.rewardOffer.findFirst(existing)) return 'duplicate';
       for (const { rule, fingerprint } of drafts) {
         await saveOfferInTransaction(tx, rule, 'draft', undefined, { sourceKey: `${prefix}${fingerprint}`, fingerprint });
       }
-      return drafts.length;
+      return 'drafted';
     }, { isolationLevel: 'Serializable' }));
+    const count = state === 'drafted' ? drafts.length : 0;
+    outcomes.push({ url: article.url, title: article.title, state, drafts: count,
+      method: extracted === null ? 'rules' : 'ollama' });
     updated += count;
     if (!count) skipped++;
   }
-  return { updated, skipped };
+  return { updated, skipped, outcomes };
+}
+
+export function describeWechatArticles(items: { url: string; title?: string }[], outcomes: WechatSyncArticle[], known: Set<string>) {
+  const byUrl = new Map(outcomes.map((item) => [item.url, item]));
+  return items.map((item): WechatSyncArticle => byUrl.get(item.url) ?? {
+    ...item,
+    state: known.has(wechatArticleKey(item.url)) ? 'duplicate' : 'missing',
+  });
 }
 
 export async function importWechatArticle({ url, title, text }: z.infer<typeof wechatImportSchema>) {
   const article = text ? { url, text, title: title || text.split(/\r?\n/, 1)[0].slice(0, 120) } : await readWechatArticle(url);
   if (!article) return { updated: 0, skipped: 0, needsContent: true };
-  return { ...await importWechatArticles([article]), needsContent: false };
+  const { updated, skipped } = await importWechatArticles([article]);
+  return { updated, skipped, needsContent: false };
 }
 
 export async function readWechatArticle(url: string) {
@@ -104,23 +130,28 @@ async function syncWechatFeed(manual: boolean) {
     return row;
   }, { isolationLevel: 'Serializable' }));
   if (!setting) return empty;
+  const history: WechatSyncRunContext = { source: 'werss', trigger: manual ? 'manual' : 'scheduled', startedAt: lastAttempt };
   try {
     const url = feedUrlSchema.parse(setting.value);
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000),
       headers: { Accept: 'application/rss+xml, application/atom+xml, application/xml' } });
     if (!response.ok) throw new Error(`WeRSS 返回 HTTP ${response.status}`);
-    const { articles, missing } = parseWechatFeed(await boundedOfferDocument(response, 4_000_000));
-    const result = await importWechatArticles(articles, async (tx) =>
+    const { articles, missing, missingArticles } = parseWechatFeed(await boundedOfferDocument(response, 4_000_000));
+    const { updated, skipped, outcomes } = await importWechatArticles(articles, async (tx) =>
       (await tx.appSetting.findUnique({ where: { key: settingKey } }))?.value === url);
     const warning = missing ? `${missing} 篇缺少可读正文或微信原文链接。请在 WeRSS 启用全文和原链接。` : null;
     await prisma.rewardSource.updateMany({ where: { key: stateKey, lastAttempt }, data: {
       ...(articles.length > 0 || !missing ? { lastSuccess: new Date() } : {}), error: warning,
     } });
-    return { ...result, missing };
+    await recordWechatSyncRun(history, { status: missing ? 'partial' : 'completed', message: warning,
+      discovered: articles.length + missing, updated, skipped, missing,
+      articles: [...outcomes, ...missingArticles.map((item) => ({ ...item, state: 'missing' as const }))] });
+    return { updated, skipped, missing };
   } catch (error) {
     const known = error instanceof Error && /^(?:WeRSS 返回|该地址没有|来源内容)/.test(error.message);
     const detail = known ? (error as Error).message : '无法读取 WeRSS，请核对订阅地址和 NAS 网络连接';
     await prisma.rewardSource.updateMany({ where: { key: stateKey, lastAttempt }, data: { error: detail } });
+    await recordWechatSyncRun(history, { status: 'failed', message: detail, discovered: 0, ...empty, articles: [] });
     if (manual) throw new ApiError(502, detail);
     return empty;
   }

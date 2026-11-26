@@ -124,3 +124,39 @@ it('微信限频时提示可重试时间，同时保留手动导入', async () =
   expect((screen.getByLabelText('搜索公众号') as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: '导入公众号文章' }) as HTMLButtonElement).disabled).toBe(false);
 });
+
+it('同步记录显示文章状态，并用原有链接和标题打开补录', async () => {
+  const url = 'https://mp.weixin.qq.com/s/missing_content';
+  vi.spyOn(api, 'get').mockImplementation(async (path) => path.endsWith('/wechat-sync-runs') ? {
+    runs: [{ id: 1, source: 'weread', trigger: 'scheduled', accountName: '卡羊腿', startedAt: '2026-11-26T00:00:00Z',
+      report: { status: 'partial', discovered: 1, updated: 0, skipped: 0, missing: 1, message: '1 篇文章缺少可读正文。',
+        articles: [{ url, title: '本周活动', state: 'missing', drafts: 0 }] } }], nextBefore: null,
+  } : { cards: [], offers: [], ollamaEnabled: false });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '同步记录' }));
+  expect(await screen.findByText('本周活动')).toBeTruthy();
+  expect(screen.getByRole('link', { name: '查看原文' }).getAttribute('href')).toBe(url);
+  fireEvent.click(screen.getByRole('button', { name: '补录正文' }));
+  expect((await screen.findByLabelText('微信文章链接') as HTMLInputElement).value).toBe(url);
+  expect((screen.getByLabelText('文章标题（可选）') as HTMLInputElement).value).toBe('本周活动');
+  expect(screen.getByLabelText('文章正文')).toBeTruthy();
+});
+
+it('我的卡优惠显示已关联卡片的整理结果和领取路径', async () => {
+  const rule = { title: '奈雪满40减8', kind: 'activity', cardIds: [1], merchants: ['奈雪'], channels: [],
+    threshold: 40, discount: { type: 'fixed', amount: 8 }, sourceText: '公众号未整理的长文', entry: '华彩生活 → 奈雪优惠',
+    startsOn: '2026-12-01', endsOn: '2026-12-31', requiresClaim: true };
+  vi.spyOn(api, 'get').mockResolvedValue({
+    cards: [{ id: 1, bankName: '华夏银行', nickname: 'UP卡', displayLast4: '1234', profile: {} }], ollamaEnabled: true,
+    offers: [{ id: 1, rule, review: 'draft', applicableCardIds: [1], records: [] },
+      { id: 2, rule: { ...rule, title: '未关联到持有卡', cardIds: [] }, review: 'draft', applicableCardIds: [1], records: [] }],
+  });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '我的卡优惠' }));
+  expect(await screen.findByText('奈雪满40减8')).toBeTruthy();
+  expect(screen.getByText('华夏银行（1234） · UP卡')).toBeTruthy();
+  expect(screen.getByText('华彩生活 → 奈雪优惠')).toBeTruthy();
+  expect(screen.getByText(/2026-12-01 至 2026-12-31.*需先领券/)).toBeTruthy();
+  expect(screen.queryByText('公众号未整理的长文')).toBeNull();
+  expect(screen.queryByText('未关联到持有卡')).toBeNull();
+});

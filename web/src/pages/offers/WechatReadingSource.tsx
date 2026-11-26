@@ -21,7 +21,8 @@ interface CollectionState {
   authorized: boolean; account: Account | null; suggestedAccount: Account; enabled: boolean; syncHours: number;
   lastSuccess: string | null; retryAfter: string | null; error: string | null;
 }
-interface SyncResult { discovered: number; updated: number; skipped: number; missing: number }
+interface SyncCounts { discovered: number; updated: number; skipped: number; missing: number }
+interface SyncResult extends SyncCounts { supplement?: SyncCounts }
 
 function WereadScan({ close, onAuthorized }: { close: () => void; onAuthorized: () => void }) {
   const [scan, setScan] = useState<Scan>();
@@ -137,7 +138,7 @@ export function WechatReadingSource({ onImported }: { onImported: () => void }) 
     try {
       const next = await api.post<SyncResult>(path + '/refresh');
       setResult(next);
-      if (next.updated) onImported();
+      if (next.updated || next.supplement?.updated) onImported();
     } catch (error) { message.error(notice(error)); }
     finally { await refresh(); setBusy(undefined); }
   }
@@ -190,6 +191,10 @@ export function WechatReadingSource({ onImported }: { onImported: () => void }) 
       </Flex>}
       {result && <Typography.Text>
         发现 {result.discovered} 篇文章，生成 {result.updated} 条草稿，跳过 {result.skipped} 篇，{result.missing} 篇正文未取得。
+      </Typography.Text>}
+      {result?.supplement && <Typography.Text type="secondary">
+        公众号来源另外检查了 {result.supplement.discovered} 篇，生成 {result.supplement.updated} 条草稿，
+        跳过 {result.supplement.skipped} 篇，{result.supplement.missing} 篇正文未取得。
       </Typography.Text>}
       {scanning && <WereadScan close={() => setScanning(false)} onAuthorized={onAuthorized} />}
     </Flex>

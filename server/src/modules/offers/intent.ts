@@ -1,8 +1,11 @@
 import { z } from 'zod';
 import { addDays, fromYmd, ymd } from '../../lib/dates';
 import { normalizedName } from './compare';
+import { askOllama } from './ollama';
 import { offerQuerySchema } from './rules';
 import type { OfferQuery } from './rules';
+
+export { ollamaEnabled } from './ollama';
 
 const textChannels = [
   [/微信/, 'wechat'], [/支付宝/, 'alipay'], [/云闪付|银联扫码/, 'unionpay'],
@@ -41,33 +44,12 @@ export function extractOfferIntent(question: string, merchants: string[], now = 
   return parsed.success ? parsed.data : null;
 }
 
-export function ollamaEnabled() {
-  return Boolean(process.env.OFFERS_OLLAMA_URL?.trim() && process.env.OFFERS_OLLAMA_MODEL?.trim());
-}
-
 /** 只发送问题与商户词表。模型结构化提取商户，报价及适用性由本地规则计算。 */
 export async function resolveMerchantWithOllama(question: string, merchants: string[]): Promise<string | null> {
-  if (!ollamaEnabled()) return null;
-  try {
-    const base = new URL(process.env.OFFERS_OLLAMA_URL!.trim());
-    if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) return null;
-    const response = await fetch(new URL('/api/chat', base), {
-      method: 'POST', signal: AbortSignal.timeout(8000), redirect: 'error',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: process.env.OFFERS_OLLAMA_MODEL!.trim(), stream: false,
-        format: { type: 'object', properties: { merchant: { type: 'string' } }, required: ['merchant'] },
-        options: { temperature: 0, num_predict: 64 },
-        messages: [
-          { role: 'system', content: '从中文问题里提取商户品牌，只返回 merchant。没有商户时返回空字符串。不可猜测未提及的品牌。' },
-          { role: 'user', content: JSON.stringify({ question, knownMerchants: merchants.slice(0, 80) }) },
-        ],
-      }),
-    });
-    if (!response.ok) return null;
-    const data = z.object({ message: z.object({ content: z.string().max(1000) }) }).parse(await response.json());
-    const merchant = z.object({ merchant: z.string().trim().min(1).max(80) }).parse(JSON.parse(data.message.content)).merchant;
-    const name = normalizedName(merchant);
-    return name && normalizedName(question).includes(name) ? merchant : null;
-  } catch { return null; }
+  const format = { type: 'object', properties: { merchant: { type: 'string' } }, required: ['merchant'] };
+  const data = await askOllama('从中文问题里提取商户品牌，只返回 merchant。没有商户时返回空字符串。不可猜测未提及的品牌。',
+    { question, knownMerchants: merchants.slice(0, 80) }, format, 8_000, 64);
+  const merchant = z.object({ merchant: z.string().trim().min(1).max(80) }).safeParse(data).data?.merchant;
+  const name = merchant && normalizedName(merchant);
+  return merchant && name && normalizedName(question).includes(name) ? merchant : null;
 }

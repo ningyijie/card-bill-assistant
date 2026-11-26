@@ -187,6 +187,18 @@ model WechatOfferSubscription {
   error         String?   @db.VarChar(255)
 }
 
+model WechatSyncRun {
+  id          Int      @id @default(autoincrement())
+  source      String   @db.VarChar(12)
+  accountName String?  @db.VarChar(120)
+  trigger     String   @db.VarChar(12)
+  startedAt   DateTime
+  finishedAt  DateTime @default(now())
+  report      Json
+
+  @@index([source, id])
+}
+
 model CardSpendConfirmation {
   cardId    Int
   card      Card    @relation(fields: [cardId], references: [id], onDelete: Cascade)

@@ -7,9 +7,11 @@ import { ApiError } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { withTransactionRetry } from '../../parsers/pipeline';
 import type { WechatOfferSubscription } from '../../generated/prisma/client';
-import { importedWechatArticles, importWechatArticles, readWechatArticle, wechatArticleKey } from './wechat-source';
+import { describeWechatArticles, importedWechatArticles, importWechatArticles, readWechatArticle, wechatArticleKey } from './wechat-source';
 import type { WechatArticle } from './wechat-articles';
-import { checkPlatformLogin, createPlatformLogin, findWechatAccounts, listWechatArticleLinks, wechatAccountSchema,
+import { recordWechatSyncRun } from './wechat-sync-runs';
+import type { WechatSyncRunContext } from './wechat-sync-runs';
+import { checkPlatformLogin, createPlatformLogin, findWechatAccounts, listWechatArticles, wechatAccountSchema,
   WechatAuthorizationExpired, wechatCredentialSchema, WechatRateLimited } from './wechat-platform';
 import type { PlatformLogin } from './wechat-platform';
 
@@ -130,17 +132,19 @@ export async function configureWechatCollection({ account, enabled }: z.infer<ty
   }, { isolationLevel: 'Serializable' }));
 }
 
-interface CollectionResult { updated: number; skipped: number; missing: number }
-const empty: CollectionResult = { updated: 0, skipped: 0, missing: 0 };
-export async function refreshWechatCollection(manual = false) {
-  if (!sync) sync = collectWechatOffers(manual).finally(() => { sync = undefined; });
+interface CollectionResult { discovered: number; updated: number; skipped: number; missing: number }
+const empty: CollectionResult = { discovered: 0, updated: 0, skipped: 0, missing: 0 };
+export async function refreshWechatCollection(manual = false, expectedAccountId?: string) {
+  if (expectedAccountId && sync) return empty;
+  if (!sync) sync = collectWechatOffers(manual, expectedAccountId).finally(() => { sync = undefined; });
   return sync;
 }
 
-async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
+async function collectWechatOffers(manual: boolean, expectedAccountId?: string): Promise<CollectionResult> {
   const lastAttempt = new Date();
   const row = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
     const row = await tx.wechatOfferSubscription.findUnique({ where: { id } });
+    if (expectedAccountId && row?.accountId !== expectedAccountId) return null;
     if (!row?.accountId || !manual && (!row.enabled || !authorized(row) || row.lastAttempt && ymd(row.lastAttempt) === ymd(lastAttempt))) return null;
     const retryAt = rateLimitUntil(row, lastAttempt.getTime());
     if (retryAt) {
@@ -152,13 +156,16 @@ async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
   }, { isolationLevel: 'Serializable' }));
   if (!row) return empty;
   const match = { id, accountId: row.accountId, authorizedAt: row.authorizedAt, lastAttempt };
+  const history: WechatSyncRunContext = { source: 'platform', accountName: row.accountName || row.accountId,
+    trigger: expectedAccountId ? 'supplement' : manual ? 'manual' : 'scheduled', startedAt: lastAttempt };
+  let listed: Awaited<ReturnType<typeof listWechatArticles>> = [];
   try {
-    const links = await listWechatArticleLinks(getCredential(row), row.accountId);
-    const earlier = await importedWechatArticles(links);
-    const remaining = links.filter((url) => !earlier.has(wechatArticleKey(url)));
+    listed = await listWechatArticles(getCredential(row), row.accountId);
+    const earlier = await importedWechatArticles(listed.map(({ url }) => url));
+    const remaining = listed.filter(({ url }) => !earlier.has(wechatArticleKey(url)));
     const articles: WechatArticle[] = [];
     for (let i = 0; i < remaining.length; i += 2) {
-      const batch = await Promise.all(remaining.slice(i, i + 2).map(readWechatArticle));
+      const batch = await Promise.all(remaining.slice(i, i + 2).map(({ url }) => readWechatArticle(url)));
       articles.push(...batch.filter((article) => article !== undefined));
     }
     const imported = await importWechatArticles(articles, async (tx) => !!await tx.wechatOfferSubscription.findFirst({ where: match, select: { id: true } }));
@@ -167,13 +174,18 @@ async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
     await prisma.wechatOfferSubscription.updateMany({ where: match, data: { error: warning,
       ...(articles.length || !missing ? { lastSuccess: new Date() } : {}),
     } });
-    return { updated: imported.updated, skipped: imported.skipped + links.length - remaining.length, missing };
+    const counts = { discovered: listed.length, updated: imported.updated, skipped: imported.skipped + listed.length - remaining.length, missing };
+    await recordWechatSyncRun(history, { ...counts, status: missing ? 'partial' : 'completed', message: warning,
+      articles: describeWechatArticles(listed, imported.outcomes, earlier) });
+    return counts;
   } catch (error) {
     if (error instanceof WechatRateLimited) await rememberRateLimit(error);
     if (error instanceof WechatAuthorizationExpired) await markAuthorizationExpired(row);
-    else await prisma.wechatOfferSubscription.updateMany({ where: match, data: {
-      error: error instanceof ApiError ? error.message : '公众号同步失败，请稍后重试',
-    } });
+    const message = error instanceof ApiError ? error.message : '公众号同步失败，请稍后重试';
+    if (!(error instanceof WechatAuthorizationExpired)) await prisma.wechatOfferSubscription.updateMany({ where: match, data: { error: message } });
+    await recordWechatSyncRun(history, { ...empty, discovered: listed.length, status: error instanceof WechatRateLimited ? 'limited' : 'failed',
+      ...(error instanceof WechatRateLimited ? { retryAfter: error.retryAt.toISOString() } : {}),
+      message, articles: listed.map((item) => ({ ...item, state: 'unprocessed' })) });
     if (manual) throw error;
     return empty;
   }

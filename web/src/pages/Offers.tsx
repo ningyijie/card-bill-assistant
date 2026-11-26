@@ -11,6 +11,7 @@ import { OfferEditor } from './offers/OfferEditor';
 import { WechatOfferSources } from './offers/WechatOfferSources';
 import { WechatAutoSource } from './offers/WechatAutoSource';
 import { WechatReadingSource } from './offers/WechatReadingSource';
+import { WechatSyncRuns } from './offers/WechatSyncRuns';
 import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
@@ -48,7 +49,10 @@ function RuleDetails({ rule, verifiedAt }: { rule: OfferRule; verifiedAt: string
   const terms = [
     rule.threshold != null && `单笔满 ${yuan(rule.threshold)}`,
     rule.channels.length > 0 && rule.channels.map((id) => paymentChannels[id]).join(' / '),
-    rule.endsOn && `截至 ${rule.endsOn}`,
+    rule.startsOn && rule.endsOn ? `${rule.startsOn} 至 ${rule.endsOn}`
+      : rule.endsOn ? `截至 ${rule.endsOn}` : rule.startsOn && `${rule.startsOn} 起`,
+    rule.requiresRegistration && '需先报名',
+    rule.requiresClaim && '需先领券',
     rule.claimAt && `${rule.claimAt} 开抢`,
     rule.totalUses && `每周期 ${rule.totalUses} 次`,
   ].filter(Boolean).join(' · ');
@@ -159,6 +163,8 @@ export default function Offers() {
   const [record, setRecord] = useState<RecordTarget>();
   const [archive, setArchive] = useState<CatalogOffer>();
   const [history, setHistory] = useState<CatalogOffer>();
+  const [articleSource, setArticleSource] = useState<string>();
+  const [offerCard, setOfferCard] = useState<number>();
   const [selectedTrackCards, setSelectedTrackCards] = useState<Record<number, number>>({});
   const locking = useRef(false);
   const refresh = () => { void catalog.refresh(); };
@@ -205,8 +211,8 @@ export default function Offers() {
     finally { setSourceBusy(undefined); void sources.refresh(); }
   }
 
-  function libraryCards(items: CatalogOffer[], favorite = false) {
-    if (!items.length) return <Empty description={favorite ? '还没有收藏的活动' : '暂无权益或活动'} />;
+  function libraryCards(items: CatalogOffer[], favorite = false, showCards = false) {
+    if (!items.length) return <Empty description={showCards ? '暂无匹配这类卡片的优惠' : favorite ? '还没有收藏的活动' : '暂无权益或活动'} />;
     return <div className="offers-results-grid">
       {items.map((offer) => {
         const applicable = cards.filter((card) => offer.applicableCardIds.includes(card.id));
@@ -217,6 +223,8 @@ export default function Offers() {
             {offer.review !== 'ready' && <Tag>{offer.review === 'draft' ? '待核对' : '已归档'}</Tag>}
           </Space>}>
           <Flex vertical gap={8}>
+            {showCards && <Space size={[4, 6]} wrap>{applicable.map((card) => <Tag key={card.id}>{cardDisplayLabel(card)}</Tag>)}</Space>}
+            {showCards && offer.rule.merchants.length > 0 && <Typography.Text type="secondary">{offer.rule.merchants.join('、')}</Typography.Text>}
             <RuleDetails rule={offer.rule} verifiedAt={offer.verifiedAt} />
             {favorite && offer.records.filter(({ state }) => state.favorite).map(({ cardId, state }) => {
               const card = cards.find((item) => item.id === cardId);
@@ -266,8 +274,23 @@ export default function Offers() {
     { key: 'ask', label: '问 AI', children: tab === 'ask' ? searchForm(true) : null },
     { key: 'search', label: '搜优惠', children: tab === 'search' ? searchForm(false) : null },
     { key: 'benefits', label: '我的权益', children: libraryCards(library.filter((item) => item.rule.kind === 'benefit')) },
+    { key: 'card-offers', label: '我的卡优惠', children: <Flex vertical gap={12}>
+      <Flex justify="space-between" align="center" wrap gap={8}>
+        <Select<number> allowClear value={offerCard} onChange={setOfferCard} style={{ minWidth: 168 }} aria-label="筛选适用卡片"
+          placeholder="全部持有卡片" options={cards.map((card) => ({ value: card.id, label: cardDisplayLabel(card) }))} />
+        {catalog.data?.ollamaEnabled === false && <Typography.Text type="secondary">本地 AI 未配置，当前用规则提取明确的优惠。</Typography.Text>}
+      </Flex>
+      {libraryCards(library.filter(({ rule, review, applicableCardIds }) => rule.kind === 'activity' && review !== 'archived'
+        && rule.cardIds.length > 0 && (offerCard == null ? applicableCardIds.length > 0 : applicableCardIds.includes(offerCard))), false, true)}
+    </Flex> },
     { key: 'saved', label: '已收藏', children: libraryCards(library.filter((item) => item.review === 'ready' && item.records.some((row) => row.state.favorite)), true) },
-    { key: 'manage', label: '维护活动', children: libraryCards(library.filter((item) => item.rule.kind === 'activity')) },
+    { key: 'manage', label: '维护活动', children: <Flex vertical gap={12}>
+      {articleSource && <Space wrap>
+        <Typography.Text>当前仅显示该公众号文章的活动</Typography.Text>
+        <Button size="small" onClick={() => setArticleSource(undefined)}>查看全部活动</Button>
+      </Space>}
+      {libraryCards(library.filter((item) => item.rule.kind === 'activity' && (!articleSource || item.rule.sourceUrl === articleSource)))}
+    </Flex> },
     { key: 'cards', label: '卡片资料', children: <div className="offers-results-grid">
       {cards.map((card) => <Card key={card.id} size="small" title={cardDisplayLabel(card)}
         extra={<Button type="link" size="small" onClick={() => setProfile(card)}>编辑</Button>}>
@@ -302,6 +325,8 @@ export default function Offers() {
         </Flex>
       </Card>)}
     </Flex> },
+    { key: 'wechat-runs', label: '同步记录', children: tab === 'wechat-runs' &&
+      <WechatSyncRuns onImported={refresh} onReview={(url) => { setArticleSource(url); setTab('manage'); }} /> },
   ];
 
   return <Page title="权益与活动">

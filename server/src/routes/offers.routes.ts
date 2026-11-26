@@ -13,6 +13,7 @@ import { configureWechatCollection, pollWechatScan, refreshWechatCollection, rev
   searchWechatAccounts, startWechatScan, wechatCollectionSettings, wechatCollectionStatus } from '../modules/offers/wechat-collection';
 import { configureWereadCollection, pollWereadScan, refreshWereadCollection, revokeWereadScan,
   startWereadScan, wereadCollectionStatus, wereadOtp, wereadSettings } from '../modules/offers/wechat-weread-collection';
+import { listWechatSyncRuns, wechatSyncRunQuery } from '../modules/offers/wechat-sync-runs';
 import { withTransactionRetry } from '../parsers/pipeline';
 import { requireAuth } from './middleware';
 
@@ -68,6 +69,9 @@ router.put('/werss', asyncHandler(async (req, res) => {
 router.post('/werss/refresh', asyncHandler(async (_req, res) => { res.json(await refreshWechatFeed(true)); }));
 router.post('/wechat-article', asyncHandler(async (req, res) => {
   res.json(await importWechatArticle(wechatImportSchema.parse(req.body)));
+}));
+router.get('/wechat-sync-runs', asyncHandler(async (req, res) => {
+  res.json(await listWechatSyncRuns(wechatSyncRunQuery.parse(req.query)));
 }));
 router.get('/wechat-collection', asyncHandler(async (_req, res) => { res.json(await wechatCollectionStatus()); }));
 router.put('/wechat-collection', asyncHandler(async (req, res) => {

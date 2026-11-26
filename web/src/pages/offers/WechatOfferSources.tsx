@@ -12,11 +12,11 @@ interface ImportResult { updated: number; skipped: number; needsContent: boolean
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试';
 
-export function WechatArticleImport({ close, onImported }: { close: () => void; onImported: () => void }) {
+export function WechatArticleImport({ close, onImported, initial }: { close: () => void; onImported: () => void; initial?: ImportForm }) {
   const [form] = Form.useForm<ImportForm>();
   const [busy, setBusy] = useState(false);
   const [ocr, setOcr] = useState(false);
-  const [paste, setPaste] = useState(false);
+  const [paste, setPaste] = useState(Boolean(initial));
   const [notice, setNotice] = useState('');
   const { message } = App.useApp();
 
@@ -58,7 +58,7 @@ export function WechatArticleImport({ close, onImported }: { close: () => void; 
   return <Modal open title="导入公众号文章" onCancel={close} onOk={() => void submit()}
     okText={paste ? '生成活动草稿' : '读取文章'} confirmLoading={busy} okButtonProps={{ disabled: ocr }} cancelButtonProps={{ disabled: busy || ocr }}
     closable={!busy && !ocr} mask={{ closable: false }}>
-    <Form form={form} name="wechatArticle" layout="vertical" disabled={busy || ocr}>
+    <Form form={form} name="wechatArticle" layout="vertical" initialValues={initial} disabled={busy || ocr}>
       <Form.Item name="url" label="微信文章链接" rules={[{ required: true, whitespace: true, message: '请输入微信文章链接' }]}>
         <Input maxLength={600} placeholder="https://mp.weixin.qq.com/s/…" />
       </Form.Item>
