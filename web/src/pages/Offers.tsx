@@ -10,6 +10,7 @@ import { useResource } from '../lib/useResource';
 import { OfferEditor } from './offers/OfferEditor';
 import { WechatOfferSources } from './offers/WechatOfferSources';
 import { WechatAutoSource } from './offers/WechatAutoSource';
+import { WechatReadingSource } from './offers/WechatReadingSource';
 import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
@@ -276,6 +277,7 @@ export default function Offers() {
     </div> },
     { key: 'sources', label: '活动来源', children: <Flex vertical gap={12}>
       {tab === 'sources' && <>
+        <WechatReadingSource onImported={refresh} />
         <WechatAutoSource onImported={refresh} />
         <Collapse items={[{ key: 'werss', label: '外部 WeRSS（可选）', children: <WechatOfferSources onImported={refresh} /> }]} />
       </>}

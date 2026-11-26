@@ -37,6 +37,14 @@ export async function configureWechatFeed({ url, enabled }: z.infer<typeof wecha
 
 export const wechatArticleKey = (url: string) => `wechat:${createHash('sha256').update(url).digest('hex')}:`;
 
+export async function importedWechatArticles(links: string[]) {
+  if (!links.length) return new Set<string>();
+  const rows = await prisma.rewardOffer.findMany({
+    where: { OR: links.map((url) => ({ sourceKey: { startsWith: wechatArticleKey(url) } })) }, select: { sourceKey: true },
+  });
+  return new Set(rows.map(({ sourceKey }) => sourceKey?.match(/^wechat:[a-f0-9]{64}:/)?.[0]).filter((key) => key != null));
+}
+
 export async function importWechatArticles(items: WechatArticle[], isCurrent?: (tx: Prisma.TransactionClient) => Promise<boolean>) {
   if (!items.length) return { updated: 0, skipped: 0 };
   const [known, cards] = await Promise.all([knownOfferMerchants(), isCurrent

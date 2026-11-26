@@ -12,6 +12,7 @@ import { collectOfferReminderEvents } from '../modules/offers/reminders';
 import { refreshEnabledOfferSources } from '../modules/offers/sources';
 import { refreshWechatFeed } from '../modules/offers/wechat-source';
 import { refreshWechatCollection } from '../modules/offers/wechat-collection';
+import { refreshWereadCollection } from '../modules/offers/wechat-weread-collection';
 
 /** pending 发送预占的租约；进程中断后超过该时长可由下一次任务原子接管。 */
 const NOTIFY_PENDING_LEASE_MS = 15 * 60 * 1000;
@@ -175,12 +176,18 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
   }
 
   // 邮箱每天随整点提醒同步一次。年费检查保留原来的两小时频率。
-  if (now.getMinutes() === 0 && now.getHours() === config.reminderHour) {
+  if (now.getMinutes() === 0) {
+    const weread = refreshWereadCollection(false, now).catch(() => console.error('[job] 本次微信读书同步失败'));
+    if (now.getHours() !== config.reminderHour) {
+      await weread;
+      return;
+    }
     await Promise.all([
       runDailyReminderJob(),
       refreshEnabledOfferSources().catch(() => console.error('[job] 本次活动来源同步失败')),
       refreshWechatFeed().catch(() => console.error('[job] 本次 WeRSS 同步失败')),
       refreshWechatCollection().catch(() => console.error('[job] 本次公众号同步失败')),
+      weread,
     ]);
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {
     const annualFeeEvents = await collectAnnualFeeReminderEvents();

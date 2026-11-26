@@ -11,7 +11,9 @@ RUN npm run build
 FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production TZ=Asia/Shanghai WEB_DIST_DIR=/app/web/dist SKIN_STORAGE_DIR=/app/data/skins
-RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-data-eng
+RUN apk add --no-cache chromium tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-data-eng \
+    && ln -s "$(command -v chromium || command -v chromium-browser)" /usr/local/bin/wechat-article-chromium
+ENV WECHAT_ARTICLE_CHROMIUM=/usr/local/bin/wechat-article-chromium
 
 # 先装依赖（利用层缓存）
 COPY server/package.json server/package-lock.json ./

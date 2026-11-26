@@ -7,7 +7,7 @@ import { ApiError } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { withTransactionRetry } from '../../parsers/pipeline';
 import type { WechatOfferSubscription } from '../../generated/prisma/client';
-import { importWechatArticles, readWechatArticle, wechatArticleKey } from './wechat-source';
+import { importedWechatArticles, importWechatArticles, readWechatArticle, wechatArticleKey } from './wechat-source';
 import type { WechatArticle } from './wechat-articles';
 import { checkPlatformLogin, createPlatformLogin, findWechatAccounts, listWechatArticleLinks, wechatAccountSchema,
   WechatAuthorizationExpired, wechatCredentialSchema, WechatRateLimited } from './wechat-platform';
@@ -154,9 +154,7 @@ async function collectWechatOffers(manual: boolean): Promise<CollectionResult> {
   const match = { id, accountId: row.accountId, authorizedAt: row.authorizedAt, lastAttempt };
   try {
     const links = await listWechatArticleLinks(getCredential(row), row.accountId);
-    const earlier = new Set(links.length ? (await prisma.rewardOffer.findMany({
-      where: { OR: links.map((url) => ({ sourceKey: { startsWith: wechatArticleKey(url) } })) }, select: { sourceKey: true },
-    })).map(({ sourceKey }) => sourceKey?.match(/^wechat:[a-f0-9]{64}:/)?.[0]) : []);
+    const earlier = await importedWechatArticles(links);
     const remaining = links.filter((url) => !earlier.has(wechatArticleKey(url)));
     const articles: WechatArticle[] = [];
     for (let i = 0; i < remaining.length; i += 2) {
