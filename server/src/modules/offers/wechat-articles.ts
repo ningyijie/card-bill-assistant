@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isIPv4 } from 'node:net';
+import { parseExpressionAt } from 'acorn';
 import { DomUtils, parseDocument } from 'htmlparser2';
 import { z } from 'zod';
 import { normalizedName } from './compare';
@@ -62,12 +63,52 @@ function textFromHtml(html: string) {
   return parts.join('').split('\n').map(tidy).filter(Boolean).join('\n');
 }
 
+const imagePostAssignment = /\bwindow\.cgiDataNew\s*=\s*(?=\{)/;
+
+function readImageCaption(children: ReturnType<typeof parseDocument>['children']) {
+  const script = DomUtils.findOne((node) => node.name === 'script'
+    && imagePostAssignment.test(DomUtils.textContent(node)), children);
+  if (!script) return;
+  const source = DomUtils.textContent(script);
+  const marker = imagePostAssignment.exec(source);
+  if (!marker) return;
+  try {
+    // Read literal page data without executing the WeChat scripts.
+    const data = parseExpressionAt(source, marker.index + marker[0].length, { ecmaVersion: 'latest' });
+    if (data.type !== 'ObjectExpression') return;
+    const fields = new Map(data.properties.flatMap((field) => {
+      if (field.type !== 'Property' || field.computed || field.kind !== 'init') return [];
+      const key = field.key.type === 'Identifier' ? field.key.name : field.key.type === 'Literal' ? field.key.value : null;
+      return typeof key === 'string' ? [[key, field.value] as const] : [];
+    }));
+    const showType = fields.get('item_show_type');
+    const type = showType?.type === 'BinaryExpression' && showType.operator === '*'
+      && showType.right.type === 'Literal' && showType.right.value === 1 ? showType.left : showType;
+    const pictures = fields.get('picture_page_info_list');
+    if (type?.type !== 'Literal' || (type.value !== 8 && type.value !== '8')
+      || pictures?.type !== 'ArrayExpression' || !pictures.elements.length) return;
+
+    const literal = (key: string) => {
+      const field = fields.get(key);
+      return field?.type === 'Literal' && typeof field.value === 'string' ? field.value : '';
+    };
+    // The image post renders its caption from content or desc. Other page types use desc for previews.
+    const content = fields.get('content');
+    if (content && content.type !== 'Literal') return;
+    const text = textFromHtml(literal('content') || literal('desc'));
+    if (text) return { title: tidy(literal('title')), text };
+  } catch { /* Invalid or unfamiliar bootstrap data is not article content. */ }
+}
+
 export function parseWechatPage(url: string, html: string): WechatArticle | undefined {
   const { children } = parseDocument(html);
   const body = DomUtils.findOne((node) => node.attribs.id === 'js_content', children);
-  if (!body) return;
-  const text = textFromHtml(DomUtils.getInnerHTML(body));
-  if (!text) return;
+  const text = body && textFromHtml(DomUtils.getInnerHTML(body));
+  if (!text) {
+    const caption = readImageCaption(children);
+    if (caption) return { url, text: caption.text, title: caption.title || '公众号活动' };
+    return;
+  }
   const title = DomUtils.findOne((node) => node.attribs.id === 'activity-name' || node.attribs.id === 'js_article_title', children);
   return { url, title: tidy(title ? DomUtils.textContent(title) : '') || '公众号活动', text };
 }

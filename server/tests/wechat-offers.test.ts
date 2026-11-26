@@ -31,6 +31,15 @@ const feed = `<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/
   <content:encoded><![CDATA[${article}<script>恶意立减</script>]]></content:encoded></item>
   <item><title>空正文</title><link>https://mp.weixin.qq.com/s/empty</link><description>只有摘要</description></item>
   </channel></rss>`;
+const imagePost = `<script>try {
+  window.cgiDataNew = {
+    title: '中信活动',
+    desc: '中信银行海底捞消费满200元减50元\\n活动限指定门店',
+    content_noencode: '仅供分享的摘要',
+    item_show_type: '8' * 1,
+    picture_page_info_list: [{ cdn_url: 'https://mmbiz.qpic.cn/example' }],
+  };
+} catch (error) {}</script>`;
 
 describe('公众号活动', () => {
   it('从 RSS 正文拆出持卡银行草稿，保留原文并过滤脚本和未持有银行', () => {
@@ -53,6 +62,18 @@ describe('公众号活动', () => {
     expect(parseWechatPage(url, `<h1 id="activity-name">银行优惠</h1><div id="js_content">${article}</div>`))
       .toMatchObject({ url, title: '银行优惠' });
     expect(() => parseWechatFeed('<html>登录 WeRSS</html>')).toThrow('有效的 RSS');
+  });
+
+  it('图文动态页面读取显示说明，普通文章的分享摘要仍不视为正文', () => {
+    expect(parseWechatPage(url, imagePost)).toEqual({
+      url, title: '中信活动', text: '中信银行海底捞消费满200元减50元\n活动限指定门店',
+    });
+    const full = imagePost.replace("desc:", "content: '中信银行海底捞满200元减50元<br>每周三可用', desc:");
+    expect(parseWechatPage(url, full)?.text).toBe('中信银行海底捞满200元减50元\n每周三可用');
+    expect(parseWechatPage(url, imagePost.replace('desc:', 'content: renderArticle(), desc:'))).toBeUndefined();
+    expect(parseWechatPage(url, imagePost.replace("'8' * 1", "'0' * 1"))).toBeUndefined();
+    expect(parseWechatPage(url, imagePost.replace(/picture_page_info_list: \[.*?\]/,
+      'picture_page_info_list: []'))).toBeUndefined();
   });
 
   it('限制服务器读取的地址，并归一化微信文章的分享参数', () => {
@@ -249,5 +270,24 @@ describe('微信读书定时同步频率', () => {
     await expect(refreshWereadCollection(true, at(8, 5))).resolves.toMatchObject({ skipped: 1 });
     expect(browser.read).toHaveBeenCalledTimes(1);
     expect(saveDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('从微信读书返回的图文生成草稿而无需启动浏览器', async () => {
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(Response.json({ reviews: [] }))
+      .mockResolvedValueOnce(Response.json({ title: '中信活动', reviewId: bookId + '_example_offer_A' }))
+      .mockResolvedValueOnce(new Response(imagePost));
+    db.rewardOffer.findMany.mockResolvedValueOnce([]);
+    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 2 });
+    db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
+    browser.read.mockRejectedValue(new Error('NAS 浏览器沙箱不可用'));
+
+    await expect(refreshWereadCollection(false, at(8))).resolves.toMatchObject({
+      discovered: 1, updated: 1, missing: 0, latestOnly: true,
+    });
+    expect(browser.read).not.toHaveBeenCalled();
+    expect(saveDraft).toHaveBeenCalledWith(db, expect.objectContaining({
+      sourceUrl: url, threshold: 200, discount: { type: 'fixed', amount: 50 },
+    }), 'draft', undefined, expect.anything());
   });
 });

@@ -202,6 +202,5 @@ export async function readWereadArticle(credential: WereadCredential, link: Arti
     return;
   }
   const html = await boundedOfferDocument(response, 6_000_000);
-  // The share text may omit terms that only appear in the rendered article.
   return parseWechatPage(link.url, html);
 }
