@@ -154,21 +154,41 @@ export async function checkWereadLogin({ uid, cookies }: WereadLogin, otp = '') 
 
 interface ArticleLink { url: string; reviewId: string; title?: string }
 function articleLink(bookId: string, reviewId: unknown, originalId?: unknown, title?: unknown): ArticleLink | undefined {
-  if (typeof reviewId !== 'string' || !/^[\w~-]{1,180}$/.test(reviewId) || !reviewId.startsWith(bookId + '_')) return;
-  const token = firstText(originalId) || reviewId.slice(bookId.length + 1);
+  const original = firstText(originalId);
+  const id = firstText(reviewId) || (original && `${bookId}_${original}`);
+  if (!id || !/^[\w~-]{1,180}$/.test(id) || !id.startsWith(bookId + '_')) return;
+  const token = original || id.slice(bookId.length + 1);
   const url = articleUrlSchema.safeParse('https://mp.weixin.qq.com/s/' + token.replaceAll('~', '_'));
-  if (url.success) return { url: url.data, reviewId, title: firstText(title) };
+  if (url.success) return { url: url.data, reviewId: id, title: firstText(title) };
 }
 
 async function listOnce(credential: WereadCredential, bookId: string) {
   const found = new Map<string, ArticleLink>();
   const maxArticles = 16;
+  const maxPages = 3;
   let offset = 0;
-  for (let page = 0; page < 3 && found.size < maxArticles; page++) {
+  let listProblem: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
     if (page > 0) await delay(1_000);
     const response = await request(credential, '/web/mp/articles', { bookId, offset: String(offset) });
     const data = await readJson(response).catch(() => undefined);
-    if (!data || errorCode(data) !== 0 || !Array.isArray(data.reviews)) break;
+    if (!data) {
+      listProblem = response && !response.ok ? `微信读书文章列表请求失败（HTTP ${response.status}）` : '微信读书文章列表响应不可读';
+      break;
+    }
+    const code = errorCode(data);
+    if (code !== 0) {
+      listProblem = Number.isSafeInteger(code) ? `微信读书文章列表返回错误（${code}）` : '微信读书文章列表返回错误';
+      break;
+    }
+    if (!Array.isArray(data.reviews)) {
+      listProblem = '微信读书返回的文章列表格式无法识别';
+      break;
+    }
+    if (!data.reviews.length) {
+      if (!found.size) listProblem = '微信读书返回的文章列表为空';
+      break;
+    }
     const priorCount = found.size;
     for (const group of data.reviews.map(record)) {
       const reviews = Array.isArray(group.subReviews) ? group.subReviews.map(record) : [];
@@ -182,11 +202,21 @@ async function listOnce(credential: WereadCredential, bookId: string) {
       }
       if (found.size === maxArticles) break;
     }
-    if (found.size === priorCount || data.hasMore === false || data.hasMore === 0) break;
+    if (found.size === maxArticles) {
+      listProblem = '本次已达到文章读取上限';
+      break;
+    }
+    if (data.hasMore === false || data.hasMore === 0) break;
+    if (found.size === priorCount) {
+      listProblem = found.size ? '微信读书没有返回更多可识别的文章' : '微信读书文章列表没有可识别的条目';
+      break;
+    }
+    if (page === maxPages - 1) listProblem = '本次已达到文章列表的翻页上限';
     // The offset counts publication groups. Each group can contain several articles.
     offset += data.reviews.length;
   }
-  if (found.size) return { articles: [...found.values()], latestOnly: false };
+  if (found.size) return { articles: [...found.values()], latestOnly: false,
+    listWarning: listProblem && `${listProblem}，后续文章可能漏同步。` };
   const coverResponse = await request(credential, '/api/mp/cover', { bookId });
   if ([401, 403].includes(coverResponse?.status ?? 0)) {
     await coverResponse?.body?.cancel().catch(() => {});
@@ -198,7 +228,8 @@ async function listOnce(credential: WereadCredential, bookId: string) {
   if (code === -2010 || code === -2041) throw new ApiError(409, '微信读书无法访问该公众号，可以在微信读书中关注后重试');
   const link = articleLink(bookId, cover.reviewId, cover.originalId, cover.title);
   if (code || !link) throw new ApiError(422, '微信读书没有返回该公众号的文章，请核对公众号编号');
-  return { articles: [link], latestOnly: true };
+  return { articles: [link], latestOnly: true,
+    listWarning: `${listProblem ?? '微信读书文章列表没有可识别的条目'}，本次只检查最新一篇。` };
 }
 
 export async function listWereadArticles(credential: WereadCredential, bookId: string) {

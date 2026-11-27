@@ -361,41 +361,45 @@ describe('微信读书定时同步频率', () => {
     }), 'draft', undefined, expect.anything());
   });
 
-  it('跨页获取多篇，同一批次和已入库文章按原文去重', async () => {
+  it('读取同一批发布的五篇文章，并跳过跨页重复及已导入的文章', async () => {
     const review = (token: string) => ({ reviewId: `${bookId}_${token}` });
+    const batch = ['example_offer_B', 'example_offer_C', 'example_offer_D', 'example_offer_E', 'example_offer_F'];
     const fetch = vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce(Response.json({ reviews: [{ review: review('example_offer_A'),
-        subReviews: [{ review: review('example_offer_B') }] }], hasMore: true }))
-      .mockResolvedValueOnce(Response.json({ reviews: [{ review: review('example_offer_B') },
-        { review: review('example_offer_C') }], hasMore: false }))
-      .mockResolvedValueOnce(new Response(imagePost))
-      .mockResolvedValueOnce(new Response(imagePost));
+      .mockImplementation(async () => new Response(imagePost))
+      .mockResolvedValueOnce(Response.json({ reviews: [{
+        subReviews: batch.map((originalId) => ({ review: { mpInfo: { originalId } } })),
+      }], hasMore: true }))
+      .mockResolvedValueOnce(Response.json({ reviews: [{ review: review(batch[0]) },
+        { review: review('example_offer_A') }], hasMore: false }));
     db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: bookId });
     db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
 
     await expect(refreshWereadCollection(true, at(8))).resolves.toMatchObject({
-      discovered: 3, updated: 2, skipped: 1, missing: 0, latestOnly: false,
+      discovered: 6, updated: 5, skipped: 1, missing: 0, latestOnly: false,
     });
     const requests = fetch.mock.calls.map(([input]) => new URL(String(input)));
     expect(requests.map((request) => request.searchParams.get('offset') ?? request.searchParams.get('reviewId')))
-      .toEqual(['0', '1', `${bookId}_example_offer_B`, `${bookId}_example_offer_C`]);
-    expect(saveDraft).toHaveBeenCalledTimes(2);
+      .toEqual(['0', '1', ...batch.map((token) => review(token).reviewId)]);
+    expect(saveDraft).toHaveBeenCalledTimes(5);
     expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
       source: 'weread', accountName: '卡羊腿', report: expect.objectContaining({ status: 'completed', articles: [
+        ...batch.map((token) => expect.objectContaining({ url: `https://mp.weixin.qq.com/s/${token}`, state: 'drafted' })),
         expect.objectContaining({ url, state: 'duplicate' }),
-        expect.objectContaining({ state: 'drafted', title: '中信活动' }),
-        expect.objectContaining({ state: 'drafted', title: '中信活动' }),
       ] }),
     }) });
   });
 
-  it('只有最新一篇时，只访问微信读书并跳过已入库的文章', async () => {
+  it.each([
+    [{ reviews: [] }, '微信读书返回的文章列表为空'],
+    [{ errCode: -2041 }, '微信读书文章列表返回错误（-2041）'],
+    [{ reviews: [{ review: { mpInfo: {} } }] }, '微信读书文章列表没有可识别的条目'],
+  ])('只有最新一篇时记录列表问题并跳过已入库文章（%j）', async (list, reason) => {
     const legacyId = Buffer.from('3209006872').toString('base64');
     sources.push({ id: 1, authorizedAt: at(7),
       credential: encrypt(Buffer.from('21'.repeat(32), 'hex'), JSON.stringify({ token: '123', cookies: [] })) });
     accounts.push({ sourceId: 1, accountId: legacyId, name: '卡羊腿', enabled: true, syncHours: 24 });
     const fetch = vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce(Response.json({ reviews: [] }))
+      .mockResolvedValueOnce(Response.json(list))
       .mockResolvedValueOnce(Response.json({ reviewId: bookId + '_example_offer_A' }));
 
     await expect(refreshWereadCollection(true, at(8), bookId)).resolves.toEqual({
@@ -404,6 +408,26 @@ describe('微信读书定时同步频率', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls.every(([url]) => new URL(String(url)).hostname === 'weread.qq.com')).toBe(true);
     expect(saveDraft).not.toHaveBeenCalled();
+    const update = db.wechatSubscribedAccount.updateMany.mock.calls.at(-1)?.[0].data;
+    expect(update).toEqual({ error: reason + '，本次只检查最新一篇。' });
+    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
+      report: expect.objectContaining({ status: 'partial', message: reason + '，本次只检查最新一篇。' }),
+    }) });
+  });
+
+  it('后续页读取失败时保留已取得的文章，并记录为部分完成', async () => {
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(Response.json({ hasMore: true, reviews: [{ review: { reviewId: `${bookId}_example_offer_A` } }] }))
+      .mockResolvedValueOnce(Response.json({ errCode: -2041 }));
+
+    await expect(refreshWereadCollection(true, at(8), bookId)).resolves.toEqual({
+      discovered: 1, updated: 0, skipped: 1, missing: 0, latestOnly: false,
+    });
+    const warning = '微信读书文章列表返回错误（-2041），后续文章可能漏同步。';
+    expect(db.wechatSubscribedAccount.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: { error: warning } }));
+    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
+      report: expect.objectContaining({ status: 'partial', message: warning }),
+    }) });
   });
 
   it('微信读书遵守 Retry-After，休眠期间不发送同步请求', async () => {

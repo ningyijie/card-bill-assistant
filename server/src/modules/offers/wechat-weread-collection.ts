@@ -123,7 +123,7 @@ async function collect(bookId: string, trigger: SyncTrigger, lastAttempt: Date):
   try {
     const raw = decrypt(config.encryptionKey, account.source.credential!);
     const credential = wereadCredentialSchema.parse(JSON.parse(raw));
-    const { articles, latestOnly } = await listWereadArticles(credential, bookId);
+    const { articles, latestOnly, listWarning } = await listWereadArticles(credential, bookId);
     listed = articles;
     const imported = await importedWechatArticles(articles.map(({ url }) => url));
     const remaining = articles.filter(({ url }) => !imported.has(wechatArticleKey(url)));
@@ -140,14 +140,14 @@ async function collect(bookId: string, trigger: SyncTrigger, lastAttempt: Date):
       where: match, select: { accountId: true },
     }));
     const missing = remaining.length - content.length;
-    const warning = [latestOnly ? '微信读书暂只返回最新一篇，当天多篇可能漏同步。' : '',
+    const warning = [listWarning,
       missing ? missing + ' 篇文章缺少可读正文。' : '',
       browser.unavailable ? '正文补读浏览器未能启动。可以在活动来源手动导入文章。' : ''].filter(Boolean).join(' ');
     const updated = JSON.stringify(credential);
     if (updated !== raw) await prisma.wechatOfferSubscription.updateMany({ where: sourceMatch,
       data: { credential: encrypt(config.encryptionKey, updated) } });
     await prisma.wechatSubscribedAccount.updateMany({ where: match, data: { error: warning || null,
-      ...(content.length || !missing ? { lastSuccess: new Date() } : {}),
+      ...(!warning ? { lastSuccess: new Date() } : {}),
     } });
     const counts = { discovered: articles.length, updated: result.updated, skipped: result.skipped + articles.length - remaining.length, missing };
     await recordWechatSyncRun(history, { ...counts, status: warning ? 'partial' : 'completed', message: warning || null,
