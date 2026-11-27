@@ -23,12 +23,10 @@ vi.mock('../src/modules/offers/wechat-browser', () => ({ createWechatArticleBrow
 
 import { articleDrafts, articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from '../src/modules/offers/wechat-articles';
 import { importWechatArticle, refreshWechatFeed, wechatArticleKey, wechatImportSchema } from '../src/modules/offers/wechat-source';
-import { configureWechatCollection, pollWechatScan, refreshWechatCollection, searchWechatAccounts, startWechatScan, unsubscribeWechatCollection, wechatCollectionStatus } from '../src/modules/offers/wechat-collection';
-import { findWechatAccounts, listWechatArticles } from '../src/modules/offers/wechat-platform';
 import { listWechatSyncRuns } from '../src/modules/offers/wechat-sync-runs';
 import { configureWereadCollection, refreshWereadCollection, wereadCollectionStatus,
   wereadSettings } from '../src/modules/offers/wechat-weread-collection';
-import { decrypt, encrypt } from '../src/lib/crypto';
+import { encrypt } from '../src/lib/crypto';
 import type { RewardCard } from '../src/modules/offers/compare';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
@@ -143,104 +141,6 @@ describe('公众号活动', () => {
     expect(articleUrlSchema.safeParse('https://mp.weixin.qq.com.example.net/s/test').success).toBe(false);
     expect(articleUrlSchema.parse('https://mp.weixin.qq.com/s?idx=1&from=wx&sn=abc&mid=123&__biz=MzA%3D'))
       .toBe('https://mp.weixin.qq.com/s?__biz=MzA%3D&mid=123&idx=1&sn=abc');
-  });
-});
-
-describe('内置公众号采集', () => {
-  beforeEach(() => vi.resetAllMocks());
-
-  it('使用微信二维码确认授权，加密后保存且状态接口不暴露会话', async () => {
-    const sampleKey = '21'.repeat(32);
-    vi.stubEnv('ENCRYPTION_KEY', sampleKey);
-    const requests = [new Response('page'), Response.json({ base_resp: { ret: 0 }, uuid: 'official-qr' }),
-      new Response(Buffer.from([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpg' } }),
-      Response.json({ base_resp: { ret: 0 }, status: 3 }),
-      Response.json({ redirect_url: '/cgi-bin/home?token=9712' }, { headers: { 'Set-Cookie': 'slave_sid=private_test_session; Path=/; Max-Age=3600' } })];
-    const fetch = vi.fn(async (_request: URL) => requests.shift()!);
-    vi.stubGlobal('fetch', fetch);
-    const login = await startWechatScan();
-    expect(login.image).toMatch(/^data:image\/jpeg;base64,/);
-    expect(fetch.mock.calls.every(([request]) => new URL(String(request)).origin === 'https://mp.weixin.qq.com')).toBe(true);
-    expect(await pollWechatScan(login.id)).toEqual({ status: 'authorized' });
-    const stored = db.wechatOfferSubscription.upsert.mock.calls.at(-1)?.[0].update;
-    expect(JSON.parse(decrypt(Buffer.from(sampleKey, 'hex'), stored.credential))).toMatchObject({ token: '9712',
-      cookies: expect.arrayContaining([['slave_sid', 'private_test_session']]) });
-    db.wechatOfferSubscription.findUnique.mockResolvedValue(stored);
-    db.wechatSubscribedAccount.findMany.mockResolvedValue([]);
-    expect(await wechatCollectionStatus()).toEqual({ accounts: [], authorized: true, activeAccountId: null,
-      error: null, expiresAt: stored.expiresAt, retryAfter: null });
-  });
-
-  it('搜索公众号后仅保留有效微信原文，并按微信返回值区分频控与授权过期', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-11-24T12:00:00Z'));
-    const credential = { token: '123', cookies: [['slave_sid', 'mock']] as [string, string][] };
-    const article = JSON.stringify({ appmsgex: [{ link: `${url}?from=share` }, { link: url, title: '公众号活动' }, { link: 'https://example.org/article' }] });
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, list: [{ fakeid: 'MzE=', nickname: '卡羊腿' }] }))
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: JSON.stringify({ publish_list: [{ publish_info: article }] }) }))
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 200013 } }))
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 200003 } }));
-    vi.stubGlobal('fetch', fetch);
-    await expect(findWechatAccounts(credential, '卡羊腿')).resolves.toEqual([{ id: 'MzE=', name: '卡羊腿' }]);
-    await expect(listWechatArticles(credential, 'MzE=')).resolves.toEqual([{ url, title: '公众号活动' }]);
-    expect(new URL(String(fetch.mock.calls[1][0])).searchParams.get('fakeid')).toBe('MzE=');
-    await expect(listWechatArticles(credential, 'MzE=')).rejects.toMatchObject({ status: 429, retryAt: new Date('2026-11-24T12:15:00Z') });
-    await expect(listWechatArticles(credential, 'MzE=')).rejects.toMatchObject({ status: 409 });
-  });
-
-  it('微信限频时保存 Retry-After，期间阻止刷新和搜索，并保留扫码授权', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const now = new Date('2026-11-24T12:00:00Z');
-    const retryAt = new Date('2026-11-24T12:02:00Z');
-    vi.setSystemTime(now);
-    const key = '21'.repeat(32);
-    vi.stubEnv('ENCRYPTION_KEY', key);
-    const credential = encrypt(Buffer.from(key, 'hex'), JSON.stringify({ token: '100', cookies: [] }));
-    const row = { id: 1, credential, authorizedAt: now };
-    mockSubscriptions([row], [
-      { sourceId: 1, accountId: 'MzE=', name: '卡羊腿', enabled: true, syncHours: 24 },
-      { sourceId: 1, accountId: 'MzI=', name: '第二个号', enabled: true, syncHours: 24 },
-    ]);
-    const fetch = vi.fn().mockResolvedValueOnce(new Response('Too many requests', { status: 429, headers: { 'Retry-After': '120' } }))
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: '{"total_count":0}' }));
-    vi.stubGlobal('fetch', fetch);
-
-    await expect(refreshWechatCollection(true, 'MzE=')).rejects.toMatchObject({ status: 429, retryAt });
-    expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
-      source: 'platform', trigger: 'manual', report: expect.objectContaining({ status: 'limited', articles: [] }),
-    }) });
-    await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: retryAt });
-    await expect(refreshWechatCollection(true, 'MzI=')).rejects.toMatchObject({ status: 429, retryAt });
-    await expect(searchWechatAccounts('卡羊腿')).rejects.toMatchObject({ status: 429, retryAt });
-    await refreshWechatCollection();
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(row.credential).toBe(credential);
-
-    vi.setSystemTime(retryAt);
-    await expect(refreshWechatCollection(true, 'MzE=')).resolves.toMatchObject({ missing: 0 });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: null, accounts: [
-      { name: '卡羊腿', error: null }, { name: '第二个号' },
-    ] });
-  });
-
-  it('新增公众号保留原订阅，刷新和移除按指定公众号执行', async () => {
-    const key = '21'.repeat(32);
-    vi.stubEnv('ENCRYPTION_KEY', key);
-    const credentials = encrypt(Buffer.from(key, 'hex'), JSON.stringify({ token: '123', cookies: [] }));
-    mockSubscriptions([{ id: 1, credential: credentials, authorizedAt: new Date() }]);
-    await configureWechatCollection({ account: { id: 'MzE=', name: '卡羊腿' }, enabled: true });
-    await configureWechatCollection({ account: { id: 'MzI=', name: '第二个号' }, enabled: true });
-    await expect(wechatCollectionStatus()).resolves.toMatchObject({ accounts: [{ name: '卡羊腿' }, { name: '第二个号' }] });
-    const fetch = vi.fn(async (_url: URL) => Response.json({ base_resp: { ret: 0 }, publish_page: '{"total_count":0}' }));
-    vi.stubGlobal('fetch', fetch);
-    await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 409 });
-    await refreshWechatCollection(true, 'MzI=');
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(new URL(String(fetch.mock.calls[0][0])).searchParams.get('fakeid')).toBe('MzI=');
-    await unsubscribeWechatCollection('MzI=');
-    await expect(wechatCollectionStatus()).resolves.toMatchObject({ accounts: [{ name: '卡羊腿' }], authorized: true });
   });
 });
 
@@ -489,34 +389,39 @@ describe('微信读书定时同步频率', () => {
     }) });
   });
 
-  it.each(['同一公众号', '其他公众号', '限频中'])('单篇兜底时检查补充来源（%s）', async (scenario) => {
-    const platformId = Buffer.from('3209006872').toString('base64');
-    sources.push({ id: 1, authorizedAt: at(7), retryAfter: scenario === '限频中' ? at(9) : null,
+  it('只有最新一篇时，只访问微信读书并跳过已入库的文章', async () => {
+    const legacyId = Buffer.from('3209006872').toString('base64');
+    sources.push({ id: 1, authorizedAt: at(7),
       credential: encrypt(Buffer.from('21'.repeat(32), 'hex'), JSON.stringify({ token: '123', cookies: [] })) });
-    accounts.push({ sourceId: 1, accountId: scenario === '其他公众号' ? 'MzE=' : platformId,
-      name: '测试公众号', enabled: true, syncHours: 24 });
-    db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: platformId });
-    db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
-    const otherUrl = 'https://mp.weixin.qq.com/s/example_offer_B';
+    accounts.push({ sourceId: 1, accountId: legacyId, name: '卡羊腿', enabled: true, syncHours: 24 });
     const fetch = vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce(Response.json({ errCode: -2041 }))
-      .mockResolvedValueOnce(Response.json({ reviewId: bookId + '_example_offer_A' }))
-      .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: JSON.stringify({
-        publish_list: [{ publish_info: JSON.stringify({ appmsgex: [{ link: url + '?from=share' }, { link: otherUrl }] }) }],
-      }) }))
-      .mockResolvedValueOnce(new Response(imagePost));
+      .mockResolvedValueOnce(Response.json({ reviews: [] }))
+      .mockResolvedValueOnce(Response.json({ reviewId: bookId + '_example_offer_A' }));
 
-    const result = await refreshWereadCollection(true, at(8));
-    expect(result).toMatchObject({ discovered: 1, skipped: 1, latestOnly: true });
-    if (scenario === '同一公众号') {
-      expect(result.supplement).toEqual({ discovered: 2, updated: 1, skipped: 1, missing: 0 });
-      expect(saveDraft).toHaveBeenCalledTimes(1);
-      expect(String(fetch.mock.calls[3][0])).toBe(otherUrl);
-    } else {
-      expect(result.supplement).toBeUndefined();
-      expect(fetch).toHaveBeenCalledTimes(2);
-      expect(saveDraft).not.toHaveBeenCalled();
-    }
+    await expect(refreshWereadCollection(true, at(8), bookId)).resolves.toEqual({
+      discovered: 1, updated: 0, skipped: 1, missing: 0, latestOnly: true,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([url]) => new URL(String(url)).hostname === 'weread.qq.com')).toBe(true);
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
+  it('微信读书遵守 Retry-After，休眠期间不发送同步请求', async () => {
+    const now = at(8);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const until = new Date(now.getTime() + 120_000);
+    const fetch = vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'Retry-After': '120' } }));
+
+    await expect(refreshWereadCollection(true, now, bookId)).rejects.toMatchObject({ status: 429, retryAt: until });
+    await expect(wereadCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: until });
+    await expect(refreshWereadCollection(true, at(8, 1), bookId)).rejects.toMatchObject({ status: 429, retryAt: until });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(until);
+    await expect(refreshWereadCollection(true, until, bookId)).resolves.toMatchObject({ discovered: 1 });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { ApiError } from '../../lib/errors';
 import { boundedOfferDocument } from './sources';
 import { articleUrlSchema, parseWechatPage } from './wechat-articles';
-import { WechatRateLimited } from './wechat-platform';
 
 // Request shapes follow the WeRSS implementation noted in THIRD-PARTY-NOTICES.md.
 const origin = 'https://weread.qq.com';
@@ -35,6 +34,14 @@ export class WereadAuthorizationExpired extends ApiError {
 
 export class WereadRateLimited extends ApiError {
   constructor(readonly retryAt: Date) { super(429, '微信读书暂时限制了请求频率，请稍后重试'); }
+
+  static fromResponse(response: Response) {
+    const now = Date.now();
+    const header = response.headers.get('retry-after')?.trim() ?? '';
+    const deadline = /^\d+$/.test(header) ? now + Number(header) * 1_000 : Date.parse(header);
+    const retryAt = deadline > now && deadline < Date.UTC(9999, 0) ? deadline : now + 15 * 60_000;
+    return new WereadRateLimited(new Date(retryAt));
+  }
 }
 
 async function request(cookies: Cookies, path: string, params: Record<string, string> = {},
@@ -60,7 +67,7 @@ async function request(cookies: Cookies, path: string, params: Record<string, st
   if (!response) return;
   if (response.status === 429) {
     await response.body?.cancel().catch(() => {});
-    throw new WereadRateLimited(WechatRateLimited.fromResponse(response).retryAt);
+    throw WereadRateLimited.fromResponse(response);
   }
   for (const item of response.headers.getSetCookie()) {
     const [pair] = item.split(';', 1);

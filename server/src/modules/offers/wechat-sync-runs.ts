@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
 import { articleUrlSchema } from './wechat-articles';
+import type { SyncTrigger } from './wechat-subscriptions';
 
 const sources = z.enum(['weread', 'platform', 'werss']);
 export const wechatSyncRunQuery = z.object({
@@ -22,7 +23,7 @@ export interface WechatSyncRunContext {
   source: z.infer<typeof sources>;
   accountId?: string;
   accountName?: string | null;
-  trigger: 'scheduled' | 'manual' | 'supplement';
+  trigger: SyncTrigger;
   startedAt: Date;
 }
 

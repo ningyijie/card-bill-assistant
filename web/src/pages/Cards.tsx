@@ -78,6 +78,8 @@ import {
 import { useResetOnModeChange, useResponsive, type ResponsiveMode } from '../responsive';
 import MobileCardDetail from './cards/MobileCardDetail';
 import { CardAnnualFeeFields, CardAnnualFeeSummary, validateAnnualFeePolicy } from './cards/CardAnnualFee';
+import { CardRewardFields, normalizedCardRewardProfile } from './cards/CardRewardFields';
+import type { CardRewardFormValues } from './cards/CardRewardFields';
 import CardBillSection from '../components/CardBillSection';
 import { useSourceSnapshot } from '../lib/billNavigation';
 import { useViewState } from '../lib/viewState';
@@ -141,6 +143,7 @@ interface CardFormValues {
   remindDaysBefore: number[];
   annualFeeDate?: dayjs.Dayjs | null;
   annualFeePolicy?: CardInput['annualFeePolicy'];
+  rewardProfile?: CardRewardFormValues;
   colorPalette?: number | null;
 }
 
@@ -163,6 +166,7 @@ function cardFormInitialValues(initial?: CardRow | null): Partial<CardFormValues
     remindDaysBefore: initial.remindDaysBefore,
     annualFeeDate: initial.annualFeeDate ? dayjs(initial.annualFeeDate) : null,
     annualFeePolicy: initial.annualFeePolicy ?? null,
+    rewardProfile: initial.rewardProfile,
     colorPalette: initial.colorPalette ?? null,
   };
 }
@@ -186,6 +190,7 @@ function normalizedCardFormValues(values: Partial<CardFormValues>) {
     remindDaysBefore: [...(values.remindDaysBefore ?? [])].sort((a, b) => a - b),
     annualFeeDate: values.annualFeeDate ? values.annualFeeDate.format('YYYY-MM-DD') : null,
     annualFeePolicy: values.annualFeePolicy ?? null,
+    rewardProfile: normalizedCardRewardProfile(values.rewardProfile),
     colorPalette: values.colorPalette ?? null,
   };
 }
@@ -363,12 +368,16 @@ function CardForm({
       }
       onFinish={(v) => {
         const annualFeeDate = v.annualFeeDate ? v.annualFeeDate.format('YYYY-MM-DD') : null;
+        const profile = normalizedCardRewardProfile(v.rewardProfile);
+        const rewardProfile = JSON.stringify(profile) === JSON.stringify(normalizedCardRewardProfile(baseline.rewardProfile))
+          ? undefined : profile;
         if (initial && !billingEditable) {
           onOk({
             ...(initial.businessRole === 'supplementary' ? { holderName: v.holderName } : {}),
             nickname: v.nickname,
             annualFeeDate,
             annualFeePolicy: v.annualFeePolicy,
+            rewardProfile,
             colorPalette: v.colorPalette ?? null,
           });
           return;
@@ -379,6 +388,7 @@ function CardForm({
           dueDay: v.dueRule === 'fixed' ? v.dueDay ?? null : null,
           dueOffsetDays: v.dueRule === 'offset' ? v.dueOffsetDays ?? null : null,
           annualFeeDate,
+          rewardProfile,
           colorPalette: v.colorPalette ?? null,
         });
       }}
@@ -514,6 +524,10 @@ function CardForm({
           </Form.Item>
           </>
           )}
+        </Col>
+        <Col span={24}>
+          <h3 className="cards-edit-section-title">卡片权益（可选）</h3>
+          <CardRewardFields />
         </Col>
         <Col span={24}>
           <h3 className="cards-edit-section-title">年费与消费跟踪（均可选）</h3>

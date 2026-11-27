@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { Alert, App, Button, Card, Collapse, Empty, Flex, Form, Input, InputNumber, Modal, Select, Space, Spin, Switch, Tabs, Tag, Typography } from 'antd';
 import { api } from '../api/client';
 import type { CardSpendProgressResponse } from '../api/types';
@@ -12,7 +13,7 @@ import { WechatOfferSources } from './offers/WechatOfferSources';
 import { WechatSubscriptions } from './offers/WechatSubscriptions';
 import { WechatSyncRuns } from './offers/WechatSyncRuns';
 import type { WechatRunFilter } from './offers/WechatSyncRuns';
-import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
+import { OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
 import type { CatalogOffer, OfferCandidate, OfferCard, OfferCatalog, OfferFilters, OfferRecord, OfferRule, OfferSearchResult, OfferSource } from './offers/types';
@@ -149,6 +150,7 @@ function OfferHistory({ offer, close }: { offer: CatalogOffer; close: () => void
 
 export default function Offers() {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const catalog = useResource<OfferCatalog>('/api/offers/catalog');
   const [tab, setTab] = useState('ask');
   const sources = useResource<OfferSource[]>(tab === 'sources' ? '/api/offers/sources' : null);
@@ -159,7 +161,6 @@ export default function Offers() {
   const [busy, setBusy] = useState(false);
   const [sourceBusy, setSourceBusy] = useState<string>();
   const [editor, setEditor] = useState<{ kind: OfferRule['kind']; offer?: CatalogOffer; merchant?: string }>();
-  const [profile, setProfile] = useState<OfferCard>();
   const [record, setRecord] = useState<RecordTarget>();
   const [archive, setArchive] = useState<CatalogOffer>();
   const [history, setHistory] = useState<CatalogOffer>();
@@ -292,23 +293,16 @@ export default function Offers() {
       </Space>}
       {libraryCards(library.filter((item) => item.rule.kind === 'activity' && (!articleSource || item.rule.sourceUrl === articleSource)))}
     </Flex> },
-    { key: 'cards', label: '卡片资料', children: <div className="offers-results-grid">
-      {cards.map((card) => <Card key={card.id} size="small" title={cardDisplayLabel(card)}
-        extra={<Button type="link" size="small" onClick={() => setProfile(card)}>编辑</Button>}>
-        {[card.profile.product, card.profile.network].filter(Boolean).join(' · ') || '待填写卡产品和卡组织'}
-      </Card>)}
-      {!cards.length && <Empty description="请先在卡片管理中添加信用卡" />}
-    </div> },
     { key: 'sources', label: '活动来源', children: <Flex vertical gap={12}>
       {tab === 'sources' && <>
-        <WechatSubscriptions onImported={refresh} onHistory={(source, account, accountId) => {
-          setWechatRunFilter({ source, account, accountId }); setTab('wechat-runs');
+        <WechatSubscriptions onImported={refresh} onHistory={(account, accountId) => {
+          setWechatRunFilter({ source: 'weread', account, accountId }); setTab('wechat-runs');
         }} />
         <Collapse items={[{ key: 'werss', label: '外部 WeRSS（可选）', children: <WechatOfferSources onImported={refresh} /> }]} />
       </>}
       <Flex justify="space-between" align="center" wrap gap={6}>
         <Typography.Text strong>银行官网活动来源</Typography.Text>
-        <Button size="small" type="link" onClick={() => setTab('cards')}>查看持有卡片</Button>
+        <Button size="small" type="link" onClick={() => navigate('/cards')}>管理卡片资料</Button>
       </Flex>
       {sources.error && <Alert type="error" title={sources.error} />}
       {sources.loading && <Spin />}
@@ -377,7 +371,6 @@ export default function Offers() {
       </>}
       {editor && <OfferEditor offer={editor.offer} kind={editor.kind} merchant={editor.merchant} cards={cards} library={library} close={() => setEditor(undefined)}
         afterSave={(kind) => { refreshQuery(); setTab(kind === 'benefit' ? 'benefits' : 'manage'); }} />}
-      {profile && <CardProfileEditor card={profile} close={() => setProfile(undefined)} saved={refreshQuery} />}
       {record && <OfferRecordEditor target={record} close={() => setRecord(undefined)} saved={refreshQuery} />}
       {history && <OfferHistory offer={history} close={() => setHistory(undefined)} />}
       {archive && <Modal open title="归档这条活动？" onCancel={() => setArchive(undefined)} onOk={async () => {

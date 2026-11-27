@@ -13,6 +13,7 @@ import { allCardGroups, recomputePrimary } from '../lib/card-groups';
 import { reconcileUnfinishedPlaceholderCards } from '../lib/card-placeholders';
 import { annualFeeReviewStatuses, annualFeeSettlementModes, loadAnnualFeeTracking } from '../modules/bills/annual-fee-tracking';
 import { loadCardSpendProgress, spendCard, spendStatementDates } from '../modules/bills/card-spend-service';
+import { cardProfileSchema, readCardProfile } from '../modules/offers/rules';
 import {
   annualFeeWaivers, readSpendRules,
   spendAmountSchema, spendCountSchema, spendDateSchema, spendPeriods, spendRuleIdSchema, spendRulesSchema,
@@ -60,6 +61,7 @@ const cardCreateSchema = z.object({
   remindDaysBefore: z.array(z.number().int().min(0).max(60)).default([3, 1, 0]),
   annualFeeDate: annualFeeDateSchema,
   annualFeePolicy: annualFeePolicySchema.nullable().optional(),
+  rewardProfile: cardProfileSchema.optional(),
   /** 卡片配色序号（前端色表下标，上限与 CARD_PALETTE_COUNT-1 联动）；null = 自动分配 */
   colorPalette: z.number().int().min(0).max(31).nullable().optional(),
 });
@@ -78,6 +80,7 @@ const cardUpdateSchema = z.object({
   remindDaysBefore: z.array(z.number().int().min(0).max(60)).optional(),
   annualFeeDate: annualFeeDateSchema,
   annualFeePolicy: annualFeePolicySchema.nullable().optional(),
+  rewardProfile: cardProfileSchema.optional(),
   colorPalette: z.number().int().min(0).max(31).nullable().optional(),
   status: z.enum(['active', 'frozen', 'closed']).optional(),
 }).strict();
@@ -177,6 +180,7 @@ router.get(
           annualFeeDate: card.annualFeeDate?.toISOString() ?? null,
           annualFeeDateManual: card.annualFeeDateManual,
           annualFeePolicy: card.annualFeePolicy,
+          rewardProfile: readCardProfile(card.rewardProfile),
           colorPalette: card.colorPalette,
           businessRole: card.businessRole,
           businessPrimaryCardId: card.businessPrimaryId,
@@ -250,6 +254,7 @@ router.post(
         annualFeeDate: input.annualFeeDate ? fromYmd(input.annualFeeDate) : null,
         annualFeeDateManual: input.annualFeeDate ? true : false,
         ...(input.annualFeePolicy ? { annualFeePolicy: input.annualFeePolicy } : {}),
+        ...(input.rewardProfile !== undefined ? { rewardProfile: input.rewardProfile } : {}),
         colorPalette: input.colorPalette ?? null,
         source: 'manual',
       } });
@@ -377,6 +382,7 @@ router.get(
       annualFeeDate: card.annualFeeDate?.toISOString() ?? null,
       annualFeeDateManual: card.annualFeeDateManual,
       annualFeePolicy: card.annualFeePolicy,
+      rewardProfile: readCardProfile(card.rewardProfile),
       colorPalette: card.colorPalette,
       businessRole: card.businessRole,
       businessPrimaryCardId: card.businessPrimaryId,
@@ -467,6 +473,7 @@ router.put(
           : {}),
         ...(input.colorPalette !== undefined ? { colorPalette: input.colorPalette } : {}),
         ...(input.annualFeePolicy !== undefined ? { annualFeePolicy: input.annualFeePolicy ?? Prisma.DbNull } : {}),
+        ...(input.rewardProfile !== undefined ? { rewardProfile: input.rewardProfile } : {}),
       };
     let hiddenPlaceholder = false;
     await prisma.$transaction(async (tx) => {

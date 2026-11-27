@@ -58,12 +58,6 @@
   overflow-wrap: anywhere;
 }
 
-.offers-source-connections {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
 .offers-source-connection {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -77,8 +71,7 @@
 }
 
 @media (max-width: 700px) {
-  .offers-results-grid,
-  .offers-source-connections {
+  .offers-results-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

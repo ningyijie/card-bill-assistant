@@ -7,25 +7,25 @@ import { ApiError } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import type { WechatArticle } from './wechat-articles';
 import { createWechatArticleBrowser } from './wechat-browser';
-import { refreshWechatCollection } from './wechat-collection';
 import { describeWechatArticles, importedWechatArticles, importWechatArticles, wechatArticleKey } from './wechat-source';
 import { recordWechatSyncRun } from './wechat-sync-runs';
 import type { WechatSyncRunContext } from './wechat-sync-runs';
 import { claimWechatSubscription, createWechatSyncRunner, emptySync, listWechatSubscriptions, removeWechatSubscription,
-  saveWechatSubscription, subscriptionRunMatch, wechatAuthorized, wechatRetryTime, wechatSources } from './wechat-subscriptions';
+  saveWechatSubscription, subscriptionRunMatch, wechatAuthorized, wechatRetryTime } from './wechat-subscriptions';
 import type { SyncCounts, SyncTrigger } from './wechat-subscriptions';
 import { checkWereadLogin, listWereadArticles, readWereadArticle, startWereadLogin, wereadBookIdSchema,
   WereadAuthorizationExpired, wereadCredentialSchema, WereadRateLimited } from './wechat-weread';
 import type { WereadLogin } from './wechat-weread';
 
-const where = { id: wechatSources.weread };
+// Keep the stored source ID for existing WeRead authorizations and subscriptions.
+const where = { id: 2 };
 const scanDuration = 3 * 60_000;
 const suggestedAccount = { id: 'MP_WXS_3209006872', name: '卡羊腿' };
 const syncHoursSchema = z.union([z.literal(24), z.literal(12), z.literal(6), z.literal(3), z.literal(1)]);
 type ScanStatus = 'waiting' | 'scanned' | 'otp' | 'expired' | 'authorized';
 type ScanResult = { status: ScanStatus; rejected?: boolean };
 type ActiveScan = WereadLogin & { id: string; expiresAt: number; result: ScanResult; lastPoll: number };
-type SyncResult = SyncCounts & { latestOnly: boolean; supplement?: SyncCounts };
+type SyncResult = SyncCounts & { latestOnly: boolean };
 const empty: SyncResult = { ...emptySync, latestOnly: false };
 
 let scan: ActiveScan | undefined;
@@ -152,12 +152,7 @@ async function collect(bookId: string, trigger: SyncTrigger, lastAttempt: Date):
     const counts = { discovered: articles.length, updated: result.updated, skipped: result.skipped + articles.length - remaining.length, missing };
     await recordWechatSyncRun(history, { ...counts, status: warning ? 'partial' : 'completed', message: warning || null,
       articles: describeWechatArticles(articles, result.outcomes, imported) });
-    // The platform uses the same numeric publisher ID encoded as __biz. Its daily task already runs separately.
-    const platformId = Buffer.from(bookId.slice('MP_WXS_'.length)).toString('base64');
-    const supplement = trigger === 'manual' && latestOnly
-      ? await refreshWechatCollection(false, platformId, lastAttempt).catch(() => undefined)
-      : undefined;
-    return { ...counts, latestOnly, ...(supplement?.discovered ? { supplement } : {}) };
+    return { ...counts, latestOnly };
   } catch (error) {
     const reason = error instanceof ApiError ? error : new ApiError(502, '微信读书同步失败，请稍后重试');
     await prisma.wechatSubscribedAccount.updateMany({ where: match, data: { error: reason.message } });

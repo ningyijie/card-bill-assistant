@@ -4,7 +4,7 @@ import { displayDate } from '../../lib/displayDate';
 import { useResource } from '../../lib/useResource';
 import { WechatArticleImport } from './WechatOfferSources';
 
-const sources = { weread: '微信读书', platform: '公众号平台', werss: '外部 WeRSS' };
+const sources = { weread: '微信读书', platform: '公众号平台（历史）', werss: '外部 WeRSS' };
 const triggers = { manual: '手动刷新', scheduled: '定时同步', supplement: '补充同步' };
 const runStates = {
   completed: { label: '已完成', color: 'green' }, partial: { label: '部分完成', color: 'gold' },

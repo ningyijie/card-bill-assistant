@@ -11,7 +11,6 @@ import { runUpgradeReminderCheck } from '../modules/upgrades/upgrade-reminder';
 import { collectOfferReminderEvents } from '../modules/offers/reminders';
 import { refreshEnabledOfferSources } from '../modules/offers/sources';
 import { refreshWechatFeed } from '../modules/offers/wechat-source';
-import { refreshWechatCollection } from '../modules/offers/wechat-collection';
 import { refreshWereadCollection } from '../modules/offers/wechat-weread-collection';
 
 /** pending 发送预占的租约；进程中断后超过该时长可由下一次任务原子接管。 */
@@ -186,7 +185,6 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
       runDailyReminderJob(),
       refreshEnabledOfferSources().catch(() => console.error('[job] 本次活动来源同步失败')),
       refreshWechatFeed().catch(() => console.error('[job] 本次 WeRSS 同步失败')),
-      refreshWechatCollection(false, undefined, now).catch(() => console.error('[job] 本次公众号同步失败')),
       weread,
     ]);
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {

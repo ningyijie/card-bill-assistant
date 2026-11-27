@@ -6,7 +6,7 @@ import { fromYmd, periodOf, today } from '../src/lib/dates';
 import { Prisma } from '../src/generated/prisma/client';
 
 const prisma = vi.hoisted(() => ({
-  card: { findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+  card: { findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   bill: { findMany: vi.fn() },
   billTransaction: { findMany: vi.fn() },
   cardSpendConfirmation: { findMany: vi.fn(), deleteMany: vi.fn() },
@@ -98,6 +98,7 @@ describe('GET /api/cards 多币种本期账单', () => {
       hidden: false,
       createdAt: fromYmd('2026-01-01'),
       remindDaysBefore: [3, 1, 0],
+      rewardProfile: { product: '经典白', network: 'Visa', points: 0 },
     });
     prisma.card.findMany.mockResolvedValue([card]);
     prisma.bill.findMany.mockResolvedValue([
@@ -132,7 +133,8 @@ describe('GET /api/cards 多币种本期账单', () => {
       await withServer(async (url) => {
         const response = await fetch(`${url}/api/cards`);
         expect(response.status).toBe(200);
-        const rows = await response.json() as Array<{ currentCycle: Record<string, unknown> }>;
+        const rows = await response.json() as Array<{ currentCycle: Record<string, unknown>; rewardProfile: unknown }>;
+        expect(rows[0]?.rewardProfile).toEqual({ product: '经典白', network: 'Visa', points: 0 });
         expect(rows[0]?.currentCycle).toMatchObject({
           amount: 2.68,
           minAmount: 0.14,
@@ -179,7 +181,27 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
       });
       expect(res.status).toBe(200);
     });
+    expect(prisma.card.update).toHaveBeenCalledWith({ where: { id: 2 }, data: { nickname: '金卡' } });
     expect(recomputePrimary).not.toHaveBeenCalled();
+  });
+
+  it('单次保存副卡的别名和权益资料，并可将权益字段清空', async () => {
+    prisma.card.findUnique.mockResolvedValue(existingCard({
+      businessRole: 'secondary', businessPrimaryId: 1, rewardProfile: { product: '老卡种', points: 100 },
+    }));
+    await withServer(async (url) => {
+      const save = (values: Record<string, unknown>) => fetch(`${url}/api/cards/2`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(values),
+      });
+      const rewardProfile = { product: '华夏 UP', network: '万事达', points: 0, upGold: 25, valuePer1000UpGold: 12.5 };
+      expect((await save({ nickname: '日常', rewardProfile })).status).toBe(200);
+      expect(prisma.card.update).toHaveBeenLastCalledWith({ where: { id: 2 }, data: { nickname: '日常', rewardProfile } });
+      expect((await save({ rewardProfile: {} })).status).toBe(200);
+      expect(prisma.card.update).toHaveBeenLastCalledWith({ where: { id: 2 }, data: { rewardProfile: {} } });
+      expect((await save({ rewardProfile: { network: '不支持的卡组织' } })).status).toBe(400);
+    });
+    expect(prisma.card.update).toHaveBeenCalledTimes(2);
+    expect(prisma.card.updateMany).not.toHaveBeenCalled();
   });
 
   it('副卡可单独保存任意已知的年费字段，也可全部留空', async () => {
@@ -338,6 +360,24 @@ describe('PUT /api/cards/:id 保存后归组检查', () => {
       data: { status: 'frozen' },
     });
   });
+});
+
+it('新增卡片时可一起保存卡种、卡组织和积分', async () => {
+  vi.clearAllMocks();
+  prisma.card.findUnique.mockResolvedValueOnce(null);
+  prisma.card.findMany.mockResolvedValueOnce([]);
+  prisma.card.create.mockResolvedValueOnce({ id: 2 });
+  const rewardProfile = { product: '家庭挚爱', network: '银联', points: 300 };
+  await withServer(async (url) => {
+    const response = await fetch(`${url}/api/cards`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bankName: '建设银行', cardLast4: '1234', statementDay: 5,
+        dueRule: 'offset', dueOffsetDays: 20, rewardProfile }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ id: 2 });
+  });
+  expect(prisma.card.create).toHaveBeenCalledWith({ data: expect.objectContaining({ rewardProfile }) });
 });
 
 describe('POST /api/cards/:id/primary', () => {

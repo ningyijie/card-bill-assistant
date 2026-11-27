@@ -213,6 +213,17 @@ export interface CardAnnualFeePolicy {
   annualFeeSpendRuleId?: string;
 }
 
+export const cardNetworks = ['银联', 'Visa', '万事达', '美国运通', 'JCB', '其他'] as const;
+
+export interface CardRewardProfile {
+  product?: string;
+  network?: typeof cardNetworks[number];
+  points?: number;
+  upGold?: number;
+  valuePer1000Points?: number;
+  valuePer1000UpGold?: number;
+}
+
 export interface CardRow {
   id: number;
   bankName: string;
@@ -236,6 +247,7 @@ export interface CardRow {
   /** true=用户手动设置，自动识别不覆盖 */
   annualFeeDateManual: boolean;
   annualFeePolicy?: CardAnnualFeePolicy | null;
+  rewardProfile?: CardRewardProfile;
   /** 卡片配色序号（前端色表下标），null=按卡片 id 自动轮换 */
   colorPalette: number | null;
   /** 账单明确的业务身份；standalone 表示普通套卡。 */
@@ -282,6 +294,7 @@ export interface CardInput {
   remindDaysBefore?: number[];
   annualFeeDate?: string | null;
   annualFeePolicy?: CardAnnualFeePolicy | null;
+  rewardProfile?: CardRewardProfile;
   /** 卡片配色序号；null=自动分配，缺省不改动 */
   colorPalette?: number | null;
   status?: 'active' | 'frozen' | 'closed';

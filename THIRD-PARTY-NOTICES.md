@@ -1,7 +1,6 @@
 # Third-party notices
 
-The built-in WeChat Official Account connector uses request conventions adapted from [WeRSS v1.5.3](https://github.com/rachelos/we-mp-rss/tree/v1.5.3).
-The WeRead connector also uses request and response formats documented in [WeRSS's WeRead sources](https://github.com/rachelos/we-mp-rss/blob/main/driver/weread_qr.py).
+The WeRead connector uses request and response formats documented in [WeRSS's WeRead sources](https://github.com/rachelos/we-mp-rss/blob/main/driver/weread_qr.py).
 
 MIT License
 

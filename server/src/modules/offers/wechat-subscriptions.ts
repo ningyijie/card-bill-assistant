@@ -3,8 +3,7 @@ import { ApiError } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { withTransactionRetry } from '../../parsers/pipeline';
 
-export const wechatSources = { platform: 1, weread: 2 } as const;
-export type SyncTrigger = 'manual' | 'scheduled' | 'supplement';
+export type SyncTrigger = 'manual' | 'scheduled';
 export type SyncCounts = { discovered: number; updated: number; skipped: number; missing: number };
 export const emptySync: SyncCounts = { discovered: 0, updated: 0, skipped: 0, missing: 0 };
 

@@ -9,11 +9,8 @@ import { appliesToCard } from '../modules/offers/compare';
 import { knownOfferMerchants, offerCatalog, saveOfferInTransaction, searchRewardOffers } from '../modules/offers/service';
 import { initialOfferSources, offerSourceStatus, offerSources, refreshOfferSource } from '../modules/offers/sources';
 import { configureWechatFeed, importWechatArticle, refreshWechatFeed, wechatFeedSettings, wechatFeedStatus, wechatImportSchema } from '../modules/offers/wechat-source';
-import { configureWechatCollection, pollWechatScan, refreshWechatCollection, revokeWechatScan,
-  searchWechatAccounts, startWechatScan, unsubscribeWechatCollection, wechatCollectionSettings, wechatCollectionStatus } from '../modules/offers/wechat-collection';
 import { configureWereadCollection, pollWereadScan, refreshWereadCollection, revokeWereadScan,
   startWereadScan, unsubscribeWereadCollection, wereadCollectionStatus, wereadOtp, wereadSettings } from '../modules/offers/wechat-weread-collection';
-import { wechatAccountSchema } from '../modules/offers/wechat-platform';
 import { listWechatSyncRuns, wechatSyncRunQuery } from '../modules/offers/wechat-sync-runs';
 import { withTransactionRetry } from '../parsers/pipeline';
 import { requireAuth } from './middleware';
@@ -74,33 +71,6 @@ router.post('/wechat-article', asyncHandler(async (req, res) => {
 router.get('/wechat-sync-runs', asyncHandler(async (req, res) => {
   res.json(await listWechatSyncRuns(wechatSyncRunQuery.parse(req.query)));
 }));
-router.get('/wechat-collection', asyncHandler(async (_req, res) => { res.json(await wechatCollectionStatus()); }));
-router.put('/wechat-collection', asyncHandler(async (req, res) => {
-  await configureWechatCollection(wechatCollectionSettings.parse(req.body));
-  res.json({ ok: true });
-}));
-router.post('/wechat-collection/scan', asyncHandler(async (_req, res) => {
-  res.set('Cache-Control', 'no-store').json(await startWechatScan());
-}));
-router.post('/wechat-collection/scan/:id', asyncHandler(async (req, res) => {
-  res.set('Cache-Control', 'no-store').json(await pollWechatScan(z.uuid().parse(req.params.id)));
-}));
-router.delete('/wechat-collection/authorization', asyncHandler(async (_req, res) => {
-  await revokeWechatScan();
-  res.json({ ok: true });
-}));
-router.get('/wechat-collection/accounts', asyncHandler(async (req, res) => {
-  res.json(await searchWechatAccounts(z.string().trim().min(1).max(60).parse(req.query.q)));
-}));
-router.post('/wechat-collection/refresh', asyncHandler(async (req, res) => {
-  const { accountId } = z.object({ accountId: wechatAccountSchema.shape.id.optional() }).parse(req.body ?? {});
-  res.json(await refreshWechatCollection(true, accountId));
-}));
-router.delete('/wechat-collection/subscriptions/:id', asyncHandler(async (req, res) => {
-  await unsubscribeWechatCollection(wechatAccountSchema.shape.id.parse(req.params.id));
-  res.json({ ok: true });
-}));
-
 router.get('/weread-collection', asyncHandler(async (_req, res) => { res.json(await wereadCollectionStatus()); }));
 router.put('/weread-collection', asyncHandler(async (req, res) => {
   await configureWereadCollection(wereadSettings.parse(req.body));

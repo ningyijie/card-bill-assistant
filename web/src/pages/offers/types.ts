@@ -1,4 +1,5 @@
-export const networkOptions = ['银联', 'Visa', '万事达', '美国运通', 'JCB', '其他'];
+import type { CardRewardProfile } from '../../api/types';
+export { cardNetworks as networkOptions } from '../../api/types';
 export const paymentChannels = {
   wechat: '微信支付', alipay: '支付宝', unionpay: '云闪付', bank_app: '银行 App',
   pos: '线下刷卡', merchant_app: '商户 App',
@@ -28,8 +29,7 @@ export interface OfferRule {
 }
 export interface OfferCard {
   id: number; bankName: string; nickname: string | null; displayLast4: string;
-  profile: { product?: string; network?: string; points?: number; upGold?: number;
-    valuePer1000Points?: number; valuePer1000UpGold?: number };
+  profile: CardRewardProfile;
 }
 export interface OfferRecord {
   favorite: boolean; status: 'tracked' | 'registered' | 'claimed' | 'used';
