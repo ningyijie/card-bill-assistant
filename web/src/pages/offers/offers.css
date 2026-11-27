@@ -58,8 +58,27 @@
   overflow-wrap: anywhere;
 }
 
+.offers-source-connections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.offers-source-connection {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.offers-subscription {
+  border-block-start: 1px solid var(--border);
+  padding-block-start: 12px;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 700px) {
-  .offers-results-grid {
+  .offers-results-grid,
+  .offers-source-connections {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -67,5 +86,15 @@
 @media (max-width: 450px) {
   .offers-field-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .offers-subscriptions-panel .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-block: 6px;
+  }
+
+  .offers-subscriptions-panel .ant-card-head .ant-card-head-title {
+    flex-basis: 100%;
   }
 }

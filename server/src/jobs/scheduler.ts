@@ -186,7 +186,7 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
       runDailyReminderJob(),
       refreshEnabledOfferSources().catch(() => console.error('[job] 本次活动来源同步失败')),
       refreshWechatFeed().catch(() => console.error('[job] 本次 WeRSS 同步失败')),
-      refreshWechatCollection().catch(() => console.error('[job] 本次公众号同步失败')),
+      refreshWechatCollection(false, undefined, now).catch(() => console.error('[job] 本次公众号同步失败')),
       weread,
     ]);
   } else if (now.getMinutes() === 30 && now.getHours() % 2 === 0) {

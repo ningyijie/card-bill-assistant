@@ -5,6 +5,8 @@ import { articleUrlSchema } from './wechat-articles';
 const sources = z.enum(['weread', 'platform', 'werss']);
 export const wechatSyncRunQuery = z.object({
   source: sources.optional(),
+  account: z.string().trim().min(1).max(120).optional(),
+  accountId: z.string().regex(/^[A-Za-z0-9_+/=-]{1,80}$/).optional(),
   before: z.coerce.number().int().positive().max(2_147_483_647).optional(),
 });
 
@@ -18,6 +20,7 @@ export type WechatSyncArticle = {
 
 export interface WechatSyncRunContext {
   source: z.infer<typeof sources>;
+  accountId?: string;
   accountName?: string | null;
   trigger: 'scheduled' | 'manual' | 'supplement';
   startedAt: Date;
@@ -47,10 +50,15 @@ export async function recordWechatSyncRun(context: WechatSyncRunContext, report:
   }
 }
 
-export async function listWechatSyncRuns({ source, before }: z.infer<typeof wechatSyncRunQuery>) {
+export async function listWechatSyncRuns({ source, account, accountId, before }: z.infer<typeof wechatSyncRunQuery>) {
   const pageSize = 10;
   const rows = await prisma.wechatSyncRun.findMany({
-    where: { source, ...(before ? { id: { lt: before } } : {}) },
+    where: {
+      source,
+      ...(accountId && account ? { OR: [{ accountId }, { accountId: null, accountName: account }] }
+        : { accountId, accountName: account }),
+      ...(before ? { id: { lt: before } } : {}),
+    },
     orderBy: { id: 'desc' },
     take: pageSize + 1,
   });

@@ -10,9 +10,10 @@ import { knownOfferMerchants, offerCatalog, saveOfferInTransaction, searchReward
 import { initialOfferSources, offerSourceStatus, offerSources, refreshOfferSource } from '../modules/offers/sources';
 import { configureWechatFeed, importWechatArticle, refreshWechatFeed, wechatFeedSettings, wechatFeedStatus, wechatImportSchema } from '../modules/offers/wechat-source';
 import { configureWechatCollection, pollWechatScan, refreshWechatCollection, revokeWechatScan,
-  searchWechatAccounts, startWechatScan, wechatCollectionSettings, wechatCollectionStatus } from '../modules/offers/wechat-collection';
+  searchWechatAccounts, startWechatScan, unsubscribeWechatCollection, wechatCollectionSettings, wechatCollectionStatus } from '../modules/offers/wechat-collection';
 import { configureWereadCollection, pollWereadScan, refreshWereadCollection, revokeWereadScan,
-  startWereadScan, wereadCollectionStatus, wereadOtp, wereadSettings } from '../modules/offers/wechat-weread-collection';
+  startWereadScan, unsubscribeWereadCollection, wereadCollectionStatus, wereadOtp, wereadSettings } from '../modules/offers/wechat-weread-collection';
+import { wechatAccountSchema } from '../modules/offers/wechat-platform';
 import { listWechatSyncRuns, wechatSyncRunQuery } from '../modules/offers/wechat-sync-runs';
 import { withTransactionRetry } from '../parsers/pipeline';
 import { requireAuth } from './middleware';
@@ -91,7 +92,14 @@ router.delete('/wechat-collection/authorization', asyncHandler(async (_req, res)
 router.get('/wechat-collection/accounts', asyncHandler(async (req, res) => {
   res.json(await searchWechatAccounts(z.string().trim().min(1).max(60).parse(req.query.q)));
 }));
-router.post('/wechat-collection/refresh', asyncHandler(async (_req, res) => { res.json(await refreshWechatCollection(true)); }));
+router.post('/wechat-collection/refresh', asyncHandler(async (req, res) => {
+  const { accountId } = z.object({ accountId: wechatAccountSchema.shape.id.optional() }).parse(req.body ?? {});
+  res.json(await refreshWechatCollection(true, accountId));
+}));
+router.delete('/wechat-collection/subscriptions/:id', asyncHandler(async (req, res) => {
+  await unsubscribeWechatCollection(wechatAccountSchema.shape.id.parse(req.params.id));
+  res.json({ ok: true });
+}));
 
 router.get('/weread-collection', asyncHandler(async (_req, res) => { res.json(await wereadCollectionStatus()); }));
 router.put('/weread-collection', asyncHandler(async (req, res) => {
@@ -109,7 +117,14 @@ router.delete('/weread-collection/authorization', asyncHandler(async (_req, res)
   await revokeWereadScan();
   res.json({ ok: true });
 }));
-router.post('/weread-collection/refresh', asyncHandler(async (_req, res) => { res.json(await refreshWereadCollection(true)); }));
+router.post('/weread-collection/refresh', asyncHandler(async (req, res) => {
+  const { accountId } = z.object({ accountId: wereadSettings.shape.bookId.optional() }).parse(req.body ?? {});
+  res.json(await refreshWereadCollection(true, undefined, accountId));
+}));
+router.delete('/weread-collection/subscriptions/:id', asyncHandler(async (req, res) => {
+  await unsubscribeWereadCollection(wereadSettings.shape.bookId.parse(req.params.id));
+  res.json({ ok: true });
+}));
 
 router.post('/screenshot-draft', express.raw({ type: ['image/png', 'image/jpeg'], limit: '8mb' }), asyncHandler(async (req, res) => {
   if (!Buffer.isBuffer(req.body) || !req.body.length) throw new ApiError(400, '请选择 PNG 或 JPEG 活动截图');

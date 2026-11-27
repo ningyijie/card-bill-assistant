@@ -4,7 +4,9 @@ const db = vi.hoisted(() => ({
   appSetting: { findUnique: vi.fn(), upsert: vi.fn() }, rewardSource: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   card: { findMany: vi.fn() }, rewardOffer: { findFirst: vi.fn(), findMany: vi.fn() }, $transaction: vi.fn(),
   wechatSyncRun: { create: vi.fn(), findMany: vi.fn() },
-  wechatOfferSubscription: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
+  wechatOfferSubscription: { findUnique: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
+  wechatSubscribedAccount: { findFirst: vi.fn(), findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(),
+    update: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn() },
 }));
 const saveDraft = vi.hoisted(() => vi.fn());
 const browser = vi.hoisted(() => ({ read: vi.fn(), close: vi.fn(), unavailable: false }));
@@ -21,7 +23,7 @@ vi.mock('../src/modules/offers/wechat-browser', () => ({ createWechatArticleBrow
 
 import { articleDrafts, articleUrlSchema, feedUrlSchema, parseWechatFeed, parseWechatPage } from '../src/modules/offers/wechat-articles';
 import { importWechatArticle, refreshWechatFeed, wechatArticleKey, wechatImportSchema } from '../src/modules/offers/wechat-source';
-import { pollWechatScan, refreshWechatCollection, searchWechatAccounts, startWechatScan, wechatCollectionStatus } from '../src/modules/offers/wechat-collection';
+import { configureWechatCollection, pollWechatScan, refreshWechatCollection, searchWechatAccounts, startWechatScan, unsubscribeWechatCollection, wechatCollectionStatus } from '../src/modules/offers/wechat-collection';
 import { findWechatAccounts, listWechatArticles } from '../src/modules/offers/wechat-platform';
 import { listWechatSyncRuns } from '../src/modules/offers/wechat-sync-runs';
 import { configureWereadCollection, refreshWereadCollection, wereadCollectionStatus,
@@ -50,6 +52,51 @@ const imagePost = `<script>try {
     picture_page_info_list: [{ cdn_url: 'https://mmbiz.qpic.cn/example' }],
   };
 } catch (error) {}</script>`;
+
+interface TestSource {
+  id: number; credential: ReturnType<typeof encrypt>; authorizedAt: Date; retryAfter?: Date | null;
+}
+interface TestSubscription {
+  sourceId: number; accountId: string; name: string; enabled: boolean; syncHours: number; lastAttempt?: Date | null;
+}
+function mockSubscriptions(sources: TestSource[], accounts: TestSubscription[] = []) {
+  const findAccount = (sourceId: number, accountId: string) => accounts.find((row) => row.sourceId === sourceId && row.accountId === accountId);
+  db.$transaction.mockImplementation(async (run) => run(db));
+  db.wechatOfferSubscription.findUnique.mockImplementation(async ({ where }) => sources.find(({ id }) => id === where.id));
+  db.wechatOfferSubscription.updateMany.mockImplementation(async ({ where, data }) => {
+    const row = sources.find(({ id }) => id === where.id);
+    if (row) Object.assign(row, data);
+    return { count: Number(!!row) };
+  });
+  db.wechatSubscribedAccount.findMany.mockImplementation(async ({ where }) => accounts
+    .filter((account) => account.sourceId === where.sourceId && (where.enabled === undefined || account.enabled === where.enabled)));
+  db.wechatSubscribedAccount.findUnique.mockImplementation(async ({ where: { sourceId_accountId: { sourceId, accountId } }, include }) => {
+    const row = findAccount(sourceId, accountId);
+    return row && (include?.source ? { ...row, source: sources.find(({ id }) => id === sourceId) } : row);
+  });
+  db.wechatSubscribedAccount.update.mockImplementation(async ({ where: { sourceId_accountId: { sourceId, accountId } }, data }) =>
+    Object.assign(findAccount(sourceId, accountId)!, data));
+  db.wechatSubscribedAccount.updateMany.mockImplementation(async ({ where, data }) => {
+    const row = findAccount(where.sourceId, where.accountId);
+    if (row) Object.assign(row, data);
+    return { count: Number(!!row) };
+  });
+  db.wechatSubscribedAccount.upsert.mockImplementation(async ({ where: { sourceId_accountId: { sourceId, accountId } }, create, update }) => {
+    const row = findAccount(sourceId, accountId);
+    if (row) {
+      Object.assign(row, Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)));
+      return row;
+    }
+    const added = { ...create, syncHours: create.syncHours ?? 24 };
+    accounts.push(added);
+    return added;
+  });
+  db.wechatSubscribedAccount.deleteMany.mockImplementation(async ({ where }) => {
+    const index = accounts.findIndex(({ sourceId, accountId }) => sourceId === where.sourceId && accountId === where.accountId);
+    if (index >= 0) accounts.splice(index, 1);
+    return { count: index >= 0 ? 1 : 0 };
+  });
+}
 
 describe('公众号活动', () => {
   it('从 RSS 正文拆出持卡银行草稿，保留原文并过滤脚本和未持有银行', () => {
@@ -100,6 +147,8 @@ describe('公众号活动', () => {
 });
 
 describe('内置公众号采集', () => {
+  beforeEach(() => vi.resetAllMocks());
+
   it('使用微信二维码确认授权，加密后保存且状态接口不暴露会话', async () => {
     const sampleKey = '21'.repeat(32);
     vi.stubEnv('ENCRYPTION_KEY', sampleKey);
@@ -117,8 +166,9 @@ describe('内置公众号采集', () => {
     expect(JSON.parse(decrypt(Buffer.from(sampleKey, 'hex'), stored.credential))).toMatchObject({ token: '9712',
       cookies: expect.arrayContaining([['slave_sid', 'private_test_session']]) });
     db.wechatOfferSubscription.findUnique.mockResolvedValue(stored);
-    expect(await wechatCollectionStatus()).toEqual({ account: null, authorized: true, enabled: false,
-      error: null, expiresAt: stored.expiresAt, lastSuccess: null, retryAfter: null });
+    db.wechatSubscribedAccount.findMany.mockResolvedValue([]);
+    expect(await wechatCollectionStatus()).toEqual({ accounts: [], authorized: true, activeAccountId: null,
+      error: null, expiresAt: stored.expiresAt, retryAfter: null });
   });
 
   it('搜索公众号后仅保留有效微信原文，并按微信返回值区分频控与授权过期', async () => {
@@ -147,30 +197,50 @@ describe('内置公众号采集', () => {
     const key = '21'.repeat(32);
     vi.stubEnv('ENCRYPTION_KEY', key);
     const credential = encrypt(Buffer.from(key, 'hex'), JSON.stringify({ token: '100', cookies: [] }));
-    const row = { credential, authorizedAt: now, accountId: 'MzE=', accountName: '卡羊腿', enabled: true };
-    db.wechatOfferSubscription.findUnique.mockResolvedValue(row);
-    db.$transaction.mockImplementation(async (run) => run(db));
-    db.wechatOfferSubscription.update.mockImplementation(async ({ data }) => Object.assign(row, data));
-    db.wechatOfferSubscription.updateMany.mockImplementation(async ({ data }) => Object.assign(row, data));
+    const row = { id: 1, credential, authorizedAt: now };
+    mockSubscriptions([row], [
+      { sourceId: 1, accountId: 'MzE=', name: '卡羊腿', enabled: true, syncHours: 24 },
+      { sourceId: 1, accountId: 'MzI=', name: '第二个号', enabled: true, syncHours: 24 },
+    ]);
     const fetch = vi.fn().mockResolvedValueOnce(new Response('Too many requests', { status: 429, headers: { 'Retry-After': '120' } }))
       .mockResolvedValueOnce(Response.json({ base_resp: { ret: 0 }, publish_page: '{"total_count":0}' }));
     vi.stubGlobal('fetch', fetch);
 
-    await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 429, retryAt });
+    await expect(refreshWechatCollection(true, 'MzE=')).rejects.toMatchObject({ status: 429, retryAt });
     expect(db.wechatSyncRun.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({
       source: 'platform', trigger: 'manual', report: expect.objectContaining({ status: 'limited', articles: [] }),
     }) });
     await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: retryAt });
-    await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 429, retryAt });
+    await expect(refreshWechatCollection(true, 'MzI=')).rejects.toMatchObject({ status: 429, retryAt });
     await expect(searchWechatAccounts('卡羊腿')).rejects.toMatchObject({ status: 429, retryAt });
     await refreshWechatCollection();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(row.credential).toBe(credential);
 
     vi.setSystemTime(retryAt);
-    await expect(refreshWechatCollection(true)).resolves.toMatchObject({ missing: 0 });
+    await expect(refreshWechatCollection(true, 'MzE=')).resolves.toMatchObject({ missing: 0 });
     expect(fetch).toHaveBeenCalledTimes(2);
-    await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: null, error: null });
+    await expect(wechatCollectionStatus()).resolves.toMatchObject({ authorized: true, retryAfter: null, accounts: [
+      { name: '卡羊腿', error: null }, { name: '第二个号' },
+    ] });
+  });
+
+  it('新增公众号保留原订阅，刷新和移除按指定公众号执行', async () => {
+    const key = '21'.repeat(32);
+    vi.stubEnv('ENCRYPTION_KEY', key);
+    const credentials = encrypt(Buffer.from(key, 'hex'), JSON.stringify({ token: '123', cookies: [] }));
+    mockSubscriptions([{ id: 1, credential: credentials, authorizedAt: new Date() }]);
+    await configureWechatCollection({ account: { id: 'MzE=', name: '卡羊腿' }, enabled: true });
+    await configureWechatCollection({ account: { id: 'MzI=', name: '第二个号' }, enabled: true });
+    await expect(wechatCollectionStatus()).resolves.toMatchObject({ accounts: [{ name: '卡羊腿' }, { name: '第二个号' }] });
+    const fetch = vi.fn(async (_url: URL) => Response.json({ base_resp: { ret: 0 }, publish_page: '{"total_count":0}' }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(refreshWechatCollection(true)).rejects.toMatchObject({ status: 409 });
+    await refreshWechatCollection(true, 'MzI=');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetch.mock.calls[0][0])).searchParams.get('fakeid')).toBe('MzI=');
+    await unsubscribeWechatCollection('MzI=');
+    await expect(wechatCollectionStatus()).resolves.toMatchObject({ accounts: [{ name: '卡羊腿' }], authorized: true });
   });
 });
 
@@ -284,17 +354,17 @@ describe('WeRSS 入库与补录', () => {
 describe('微信读书定时同步频率', () => {
   const bookId = 'MP_WXS_3209006872';
   const at = (hour: number, minute = 0, day = 26) => new Date(2026, 10, day, hour, minute);
+  let sources: TestSource[];
+  let accounts: TestSubscription[];
 
   beforeEach(() => {
     vi.resetAllMocks();
     const secret = '21'.repeat(32);
     vi.stubEnv('ENCRYPTION_KEY', secret);
     vi.stubEnv('REMINDER_HOUR', '8');
-    const row = { accountId: bookId, accountName: '卡羊腿', enabled: true, authorizedAt: at(7), lastAttempt: null,
-      credential: encrypt(Buffer.from(secret, 'hex'), JSON.stringify({ wr_vid: '42', wr_skey: 'demo-token' })) };
-    db.wechatOfferSubscription.findUnique.mockResolvedValue(row);
-    db.wechatOfferSubscription.update.mockImplementation(async ({ data }) => Object.assign(row, data));
-    db.$transaction.mockImplementation(async (run) => run(db));
+    sources = [{ id: 2, authorizedAt: at(7), credential: encrypt(Buffer.from(secret, 'hex'), JSON.stringify({ wr_vid: '42', wr_skey: 'demo-token' })) }];
+    accounts = [{ sourceId: 2, accountId: bookId, name: '卡羊腿', enabled: true, syncHours: 24, lastAttempt: null }];
+    mockSubscriptions(sources, accounts);
     db.rewardOffer.findMany.mockResolvedValue([{ sourceKey: wechatArticleKey(url) + 'example' }]);
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ hasMore: false, reviews: [{ subReviews: [{ review: {
       reviewId: bookId + '_example_offer_A', mpInfo: { title: '活动标题' },
@@ -302,7 +372,7 @@ describe('微信读书定时同步频率', () => {
   });
 
   it('没有配置时每天在提醒时间运行一次，当日重复调度不会再次读取', async () => {
-    await expect(wereadCollectionStatus()).resolves.toMatchObject({ syncHours: 24 });
+    await expect(wereadCollectionStatus()).resolves.toMatchObject({ accounts: [{ syncHours: 24 }] });
     await refreshWereadCollection(false, at(7));
     expect(fetch).not.toHaveBeenCalled();
 
@@ -317,11 +387,8 @@ describe('微信读书定时同步频率', () => {
 
   it('保存新间隔后同一天可按频率同步，关闭后仍可手动刷新', async () => {
     expect(wereadSettings.safeParse({ bookId, enabled: true, syncHours: 2 }).success).toBe(false);
-    db.appSetting.upsert.mockImplementation(async ({ update }) => {
-      db.appSetting.findUnique.mockResolvedValue({ value: update.value });
-    });
     await configureWereadCollection({ bookId, enabled: true, syncHours: 6 });
-    await expect(wereadCollectionStatus()).resolves.toMatchObject({ syncHours: 6 });
+    await expect(wereadCollectionStatus()).resolves.toMatchObject({ accounts: [{ syncHours: 6 }] });
 
     await refreshWereadCollection(false, at(8));
     await refreshWereadCollection(false, at(11));
@@ -334,7 +401,23 @@ describe('微信读书定时同步频率', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     await refreshWereadCollection(true, at(20, 5));
     expect(fetch).toHaveBeenCalledTimes(3);
-    await expect(wereadCollectionStatus()).resolves.toMatchObject({ enabled: false, syncHours: 6 });
+    await expect(wereadCollectionStatus()).resolves.toMatchObject({ accounts: [{ enabled: false, syncHours: 6 }] });
+  });
+
+  it('同一授权下按公众号保存独立频率与最近尝试时间', async () => {
+    const other = 'MP_WXS_3209006873';
+    await configureWereadCollection({ bookId: other, name: '第二个号', enabled: true, syncHours: 6 });
+    const fetch = vi.fn(async (input: URL) => {
+      const id = new URL(String(input)).searchParams.get('bookId');
+      return Response.json({ hasMore: false, reviews: [{ review: { reviewId: id + '_example_offer_A' } }] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await refreshWereadCollection(false, at(8));
+    await refreshWereadCollection(false, at(14));
+    expect(fetch.mock.calls.map(([input]) => new URL(String(input)).searchParams.get('bookId'))).toEqual([bookId, other, other]);
+    await expect(wereadCollectionStatus()).resolves.toMatchObject({ accounts: [
+      { name: '卡羊腿', syncHours: 24, lastAttempt: at(8) }, { name: '第二个号', syncHours: 6, lastAttempt: at(14) },
+    ] });
   });
 
   it('微信读书缺正文时补读公开原文，保存草稿并跳过已导入的文章', async () => {
@@ -344,7 +427,7 @@ describe('微信读书定时同步频率', () => {
     } }] }));
     fetch.mockResolvedValueOnce(new Response("<script>var data={content_noencode:'仅供分享的摘要'}</script>"));
     db.rewardOffer.findMany.mockResolvedValueOnce([]);
-    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 2 });
+    db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: bookId });
     db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
     browser.read.mockResolvedValue({ url, title: '公众号活动', text: '中信银行海底捞消费满200元减50元' });
 
@@ -365,7 +448,7 @@ describe('微信读书定时同步频率', () => {
       .mockResolvedValueOnce(Response.json({ title: '中信活动', reviewId: bookId + '_example_offer_A' }))
       .mockResolvedValueOnce(new Response(imagePost));
     db.rewardOffer.findMany.mockResolvedValueOnce([]);
-    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 2 });
+    db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: bookId });
     db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
     browser.read.mockRejectedValue(new Error('NAS 浏览器沙箱不可用'));
 
@@ -387,7 +470,7 @@ describe('微信读书定时同步频率', () => {
         { review: review('example_offer_C') }], hasMore: false }))
       .mockResolvedValueOnce(new Response(imagePost))
       .mockResolvedValueOnce(new Response(imagePost));
-    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 2 });
+    db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: bookId });
     db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
 
     await expect(refreshWereadCollection(true, at(8))).resolves.toMatchObject({
@@ -407,14 +490,12 @@ describe('微信读书定时同步频率', () => {
   });
 
   it.each(['同一公众号', '其他公众号', '限频中'])('单篇兜底时检查补充来源（%s）', async (scenario) => {
-    const weread = await db.wechatOfferSubscription.findUnique();
     const platformId = Buffer.from('3209006872').toString('base64');
-    const platform = { ...weread, accountId: scenario === '其他公众号' ? 'MzE=' : platformId,
-      retryAfter: scenario === '限频中' ? new Date(Date.now() + 120_000) : null,
-      credential: encrypt(Buffer.from('21'.repeat(32), 'hex'), JSON.stringify({ token: '123', cookies: [] })) };
-    db.wechatOfferSubscription.findUnique.mockImplementation(async ({ where }) => where.id === 1 ? platform : weread);
-    db.wechatOfferSubscription.update.mockImplementation(async ({ where, data }) => Object.assign(where.id === 1 ? platform : weread, data));
-    db.wechatOfferSubscription.findFirst.mockResolvedValue({ id: 1 });
+    sources.push({ id: 1, authorizedAt: at(7), retryAfter: scenario === '限频中' ? at(9) : null,
+      credential: encrypt(Buffer.from('21'.repeat(32), 'hex'), JSON.stringify({ token: '123', cookies: [] })) });
+    accounts.push({ sourceId: 1, accountId: scenario === '其他公众号' ? 'MzE=' : platformId,
+      name: '测试公众号', enabled: true, syncHours: 24 });
+    db.wechatSubscribedAccount.findFirst.mockResolvedValue({ accountId: platformId });
     db.card.findMany.mockResolvedValue([{ bankName: '中信银行' }]);
     const otherUrl = 'https://mp.weixin.qq.com/s/example_offer_B';
     const fetch = vi.mocked(globalThis.fetch)
@@ -439,10 +520,12 @@ describe('微信读书定时同步频率', () => {
   });
 });
 
-it('同步历史支持按来源向前翻页', async () => {
+it('同步历史按订阅编号分页，并保留可按名称匹配的旧记录', async () => {
   const rows = Array.from({ length: 11 }, (_, index) => ({ id: 50 - index }));
   db.wechatSyncRun.findMany.mockResolvedValue(rows);
-  await expect(listWechatSyncRuns({ source: 'weread', before: 51 })).resolves.toEqual({ runs: rows.slice(0, 10), nextBefore: 41 });
-  expect(db.wechatSyncRun.findMany).toHaveBeenLastCalledWith({ where: { source: 'weread', id: { lt: 51 } },
+  const accountId = 'MP_WXS_3209006872';
+  await expect(listWechatSyncRuns({ source: 'weread', account: '卡羊腿', accountId, before: 51 })).resolves.toEqual({ runs: rows.slice(0, 10), nextBefore: 41 });
+  expect(db.wechatSyncRun.findMany).toHaveBeenLastCalledWith({ where: { source: 'weread',
+    OR: [{ accountId }, { accountId: null, accountName: '卡羊腿' }], id: { lt: 51 } },
     orderBy: { id: 'desc' }, take: 11 });
 });

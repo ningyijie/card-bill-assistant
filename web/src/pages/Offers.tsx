@@ -9,9 +9,9 @@ import { formatMoney } from '../lib/money';
 import { useResource } from '../lib/useResource';
 import { OfferEditor } from './offers/OfferEditor';
 import { WechatOfferSources } from './offers/WechatOfferSources';
-import { WechatAutoSource } from './offers/WechatAutoSource';
-import { WechatReadingSource } from './offers/WechatReadingSource';
+import { WechatSubscriptions } from './offers/WechatSubscriptions';
 import { WechatSyncRuns } from './offers/WechatSyncRuns';
+import type { WechatRunFilter } from './offers/WechatSyncRuns';
 import { CardProfileEditor, OfferRecordEditor } from './offers/OfferPreferences';
 import type { RecordTarget } from './offers/OfferPreferences';
 import { discountTypes, paymentChannels } from './offers/types';
@@ -164,6 +164,7 @@ export default function Offers() {
   const [archive, setArchive] = useState<CatalogOffer>();
   const [history, setHistory] = useState<CatalogOffer>();
   const [articleSource, setArticleSource] = useState<string>();
+  const [wechatRunFilter, setWechatRunFilter] = useState<WechatRunFilter>();
   const [offerCard, setOfferCard] = useState<number>();
   const [selectedTrackCards, setSelectedTrackCards] = useState<Record<number, number>>({});
   const locking = useRef(false);
@@ -300,8 +301,9 @@ export default function Offers() {
     </div> },
     { key: 'sources', label: '活动来源', children: <Flex vertical gap={12}>
       {tab === 'sources' && <>
-        <WechatReadingSource onImported={refresh} />
-        <WechatAutoSource onImported={refresh} />
+        <WechatSubscriptions onImported={refresh} onHistory={(source, account, accountId) => {
+          setWechatRunFilter({ source, account, accountId }); setTab('wechat-runs');
+        }} />
         <Collapse items={[{ key: 'werss', label: '外部 WeRSS（可选）', children: <WechatOfferSources onImported={refresh} /> }]} />
       </>}
       <Flex justify="space-between" align="center" wrap gap={6}>
@@ -326,7 +328,8 @@ export default function Offers() {
       </Card>)}
     </Flex> },
     { key: 'wechat-runs', label: '同步记录', children: tab === 'wechat-runs' &&
-      <WechatSyncRuns onImported={refresh} onReview={(url) => { setArticleSource(url); setTab('manage'); }} /> },
+      <WechatSyncRuns initialFilter={wechatRunFilter} onImported={refresh}
+        onReview={(url) => { setArticleSource(url); setTab('manage'); }} /> },
   ];
 
   return <Page title="权益与活动">
@@ -336,7 +339,7 @@ export default function Offers() {
         <Button onClick={() => setEditor({ kind: 'activity' })}>新增活动</Button>
       </Space>
       {catalog.error && <Alert type="error" title={catalog.error} action={<Button size="small" onClick={refresh}>重试</Button>} />}
-      <Tabs activeKey={tab} onChange={(key) => { setTab(key); setError(''); }} items={items} />
+      <Tabs activeKey={tab} onChange={(key) => { setTab(key); setError(''); setWechatRunFilter(undefined); }} items={items} />
       {(tab === 'ask' || tab === 'search') && <>
         {error && <Alert type="error" title={error} />}
         {answer && <>

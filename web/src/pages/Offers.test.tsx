@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App } from 'antd';
 import { MemoryRouter } from 'react-router';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -90,39 +90,67 @@ it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘
     expect.objectContaining({ url: article, text: '海底捞满 200 元减 50 元' })));
 });
 
-it('内置公众号授权后可直接搜索并订阅，无需填写 RSS', async () => {
-  const account = { id: 'MzE=', name: '卡羊腿' };
-  const collection = { account: null, authorized: true, enabled: false, expiresAt: null, lastSuccess: null, error: null };
+it('按名称添加第二个公众号，保留原订阅并可查看该号的同步记录', async () => {
+  const account = { id: 'MzI=', name: '第二个号' };
+  const collection = { accounts: [{ accountId: 'MzE=', name: '卡羊腿', enabled: true }], authorized: true };
   const read = vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url.includes('/accounts?')) return [account];
     if (url.endsWith('/wechat-collection')) return collection;
+    if (url.includes('/wechat-sync-runs')) return { runs: [], nextBefore: null };
     return url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false };
   });
   const save = vi.spyOn(api, 'put').mockImplementation(async () => {
-    Object.assign(collection, { account, enabled: true });
+    collection.accounts.push({ accountId: account.id, name: account.name, enabled: true });
     return { ok: true };
   });
+  const sync = vi.spyOn(api, 'post').mockResolvedValue({ discovered: 1, updated: 1, missing: 0 });
   render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
-  fireEvent.change(await screen.findByLabelText('搜索公众号'), { target: { value: '卡羊腿' } });
+  await screen.findByText('卡羊腿');
+  fireEvent.click(screen.getByRole('button', { name: '添加公众号' }));
+  fireEvent.change(await screen.findByLabelText('搜索公众号'), { target: { value: account.name } });
   fireEvent.click(screen.getByRole('button', { name: '搜索公众号' }));
-  fireEvent.click(await screen.findByRole('button', { name: '订阅 卡羊腿' }));
+  fireEvent.click(await screen.findByRole('button', { name: '订阅 第二个号' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/wechat-collection', { account, enabled: true }));
-  expect(read).toHaveBeenCalledWith('/api/offers/wechat-collection/accounts?' + new URLSearchParams({ q: '卡羊腿' }).toString());
-  expect(await screen.findByRole('switch', { name: '公众号每日同步' })).toBeTruthy();
+  expect(read).toHaveBeenCalledWith('/api/offers/wechat-collection/accounts?' + new URLSearchParams({ q: account.name }));
+  expect(await screen.findByRole('switch', { name: '卡羊腿 · 公众号平台自动同步' })).toBeTruthy();
+  const row = (await screen.findByRole('switch', { name: '第二个号 · 公众号平台自动同步' })).closest('.offers-subscription') as HTMLElement;
+  fireEvent.click(within(row).getByRole('button', { name: '立即同步' }));
+  await waitFor(() => expect(sync).toHaveBeenCalledWith('/api/offers/wechat-collection/refresh', { accountId: account.id }));
+  fireEvent.click(within(row).getByRole('button', { name: '查看记录' }));
+  await waitFor(() => expect(read).toHaveBeenCalledWith('/api/offers/wechat-sync-runs?' +
+    new URLSearchParams({ source: 'platform', account: account.name, accountId: account.id })));
 });
 
 it('微信限频时提示可重试时间，同时保留手动导入', async () => {
-  const collection = { account: { id: 'MzE=', name: '卡羊腿' }, authorized: true, enabled: true, expiresAt: null,
-    retryAfter: new Date(Date.now() + 60_000).toISOString(), lastSuccess: null, error: null };
+  const collection = { accounts: [{ accountId: 'MzE=', name: '卡羊腿', enabled: true }], authorized: true,
+    retryAfter: new Date(Date.now() + 60_000).toISOString() };
   vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/wechat-collection') ? collection
     : url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false });
   render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
-  expect(await screen.findByText(/后再试。等待期间可以手动导入文章/)).toBeTruthy();
-  expect((screen.getByRole('button', { name: '立即刷新' }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByLabelText('搜索公众号') as HTMLInputElement).disabled).toBe(true);
+  expect(await screen.findByText(/后可重试/)).toBeTruthy();
+  expect((screen.getByRole('button', { name: '立即同步' }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: '导入公众号文章' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: '添加公众号' }));
+  expect((await screen.findByLabelText('搜索公众号') as HTMLInputElement).disabled).toBe(true);
+});
+
+it('微信读书可以从包含公众号编号的文章长链接添加订阅', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/weread-collection') ? { accounts: [], authorized: true }
+    : url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false });
+  const save = vi.spyOn(api, 'put').mockResolvedValue({ ok: true });
+  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
+  await screen.findByText('已授权');
+  fireEvent.click(screen.getByRole('button', { name: '添加公众号' }));
+  fireEvent.change(await screen.findByLabelText('公众号名称'), { target: { value: '第二个号' } });
+  fireEvent.change(screen.getByLabelText('微信读书编号或公众号文章长链接'), {
+    target: { value: 'https://mp.weixin.qq.com/s?' + new URLSearchParams({ __biz: btoa('3209006873') }) },
+  });
+  fireEvent.click(screen.getByRole('button', { name: '添加订阅' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/weread-collection',
+    { bookId: 'MP_WXS_3209006873', name: '第二个号', enabled: true, syncHours: undefined }));
 });
 
 it('同步记录显示文章状态，并用原有链接和标题打开补录', async () => {

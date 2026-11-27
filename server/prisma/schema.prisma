@@ -185,11 +185,27 @@ model WechatOfferSubscription {
   lastSuccess   DateTime?
   retryAfter    DateTime?
   error         String?   @db.VarChar(255)
+  accounts      WechatSubscribedAccount[]
+}
+
+model WechatSubscribedAccount {
+  sourceId     Int
+  source       WechatOfferSubscription @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  accountId    String    @db.VarChar(80)
+  name         String    @db.VarChar(120)
+  enabled      Boolean   @default(true)
+  syncHours    Int       @default(24)
+  lastAttempt  DateTime?
+  lastSuccess  DateTime?
+  error        String?   @db.VarChar(255)
+
+  @@id([sourceId, accountId])
 }
 
 model WechatSyncRun {
   id          Int      @id @default(autoincrement())
   source      String   @db.VarChar(12)
+  accountId   String?  @db.VarChar(80)
   accountName String?  @db.VarChar(120)
   trigger     String   @db.VarChar(12)
   startedAt   DateTime
@@ -197,6 +213,7 @@ model WechatSyncRun {
   report      Json
 
   @@index([source, id])
+  @@index([source, accountId, id])
 }
 
 model CardSpendConfirmation {
