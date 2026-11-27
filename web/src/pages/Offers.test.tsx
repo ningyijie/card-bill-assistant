@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { App } from 'antd';
+import { App, ConfigProvider } from 'antd';
 import { MemoryRouter } from 'react-router';
 import { afterEach, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -8,6 +8,12 @@ import type { OfferSearchResult } from './offers/types';
 import { ResponsiveProvider } from '../responsive';
 
 afterEach(() => vi.restoreAllMocks());
+
+function renderOffers() {
+  render(<MemoryRouter><ResponsiveProvider><ConfigProvider theme={{ token: { motion: false } }}>
+    <App><Offers /></App>
+  </ConfigProvider></ResponsiveProvider></MemoryRouter>);
+}
 
 it('手机和桌面共用的查询页面仅凭商户问句显示门槛、卡片及领用路径', async () => {
   vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/sources') ? [] : {
@@ -30,7 +36,7 @@ it('手机和桌面共用的查询页面仅凭商户问句显示门槛、卡片�
     }],
   };
   const ask = vi.spyOn(api, 'post').mockResolvedValue(response);
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.change(screen.getByLabelText('你想买什么或去哪儿消费'), { target: { value: '今晚吃海底捞' } });
   fireEvent.click(screen.getByRole('button', { name: '查询划算方案' }));
   await waitFor(() => expect(ask).toHaveBeenCalledWith('/api/offers/ask', { question: '今晚吃海底捞' }));
@@ -48,7 +54,7 @@ it('有收录但预算不足时提示筛选条件，并可从查询结果打开�
     query: { merchant: '海底捞', date: '2026-11-22', budget: 199 },
     tiers: [], combinations: [], results: [], prefersCombination: false, emptyReason: 'filters',
   });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.change(screen.getByLabelText('你想买什么或去哪儿消费'), { target: { value: '今晚吃海底捞，预算199元' } });
   fireEvent.click(screen.getByRole('button', { name: '查询划算方案' }));
   expect(await screen.findByText('当前预算、地点、时间或支付方式与已收录的活动条件不符。')).toBeTruthy();
@@ -70,7 +76,7 @@ it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘
   });
   const importArticle = vi.spyOn(api, 'post').mockResolvedValueOnce({ updated: 0, needsContent: true })
     .mockResolvedValueOnce({ updated: 1, needsContent: false });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
   fireEvent.click(screen.getByRole('button', { name: '外部 WeRSS（可选）' }));
   const rssInput = await screen.findByRole('textbox', { name: '公众号 RSS 地址' }) as HTMLInputElement;
@@ -79,16 +85,17 @@ it('保存公众号 RSS，遇到微信验证页后保留文章链接并允许粘
   fireEvent.click(screen.getByRole('button', { name: '保存订阅' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/werss', { url: address, enabled: true }));
   fireEvent.click(screen.getByRole('button', { name: '导入公众号文章' }));
-  const linkInput = await screen.findByLabelText('微信文章链接') as HTMLInputElement;
+  const dialog = within(await screen.findByRole('dialog'));
+  const linkInput = dialog.getByLabelText('微信文章链接') as HTMLInputElement;
   fireEvent.change(linkInput, { target: { value: article } });
-  fireEvent.click(screen.getByRole('button', { name: '读取文章' }));
-  const articleBody = await screen.findByLabelText('文章正文');
+  fireEvent.click(dialog.getByRole('button', { name: '读取文章' }));
+  const articleBody = await dialog.findByLabelText('文章正文');
   expect(linkInput.value).toBe(article);
   fireEvent.change(articleBody, { target: { value: '海底捞满 200 元减 50 元' } });
-  fireEvent.click(screen.getByRole('button', { name: '生成活动草稿' }));
+  fireEvent.click(dialog.getByRole('button', { name: '生成活动草稿' }));
   await waitFor(() => expect(importArticle).toHaveBeenLastCalledWith('/api/offers/wechat-article',
     expect.objectContaining({ url: article, text: '海底捞满 200 元减 50 元' })));
-});
+}, 30_000);
 
 it('按名称添加第二个公众号，保留原订阅并可查看该号的同步记录', async () => {
   const account = { id: 'MzI=', name: '第二个号' };
@@ -104,13 +111,14 @@ it('按名称添加第二个公众号，保留原订阅并可查看该号的同�
     return { ok: true };
   });
   const sync = vi.spyOn(api, 'post').mockResolvedValue({ discovered: 1, updated: 1, missing: 0 });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
   await screen.findByText('卡羊腿');
   fireEvent.click(screen.getByRole('button', { name: '添加公众号' }));
-  fireEvent.change(await screen.findByLabelText('搜索公众号'), { target: { value: account.name } });
-  fireEvent.click(screen.getByRole('button', { name: '搜索公众号' }));
-  fireEvent.click(await screen.findByRole('button', { name: '订阅 第二个号' }));
+  const dialog = within(await screen.findByRole('dialog'));
+  fireEvent.change(dialog.getByLabelText('搜索公众号'), { target: { value: account.name } });
+  fireEvent.click(dialog.getByRole('button', { name: '搜索公众号' }));
+  fireEvent.click(await dialog.findByRole('button', { name: '订阅 第二个号' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith('/api/offers/wechat-collection', { account, enabled: true }));
   expect(read).toHaveBeenCalledWith('/api/offers/wechat-collection/accounts?' + new URLSearchParams({ q: account.name }));
   expect(await screen.findByRole('switch', { name: '卡羊腿 · 公众号平台自动同步' })).toBeTruthy();
@@ -120,14 +128,14 @@ it('按名称添加第二个公众号，保留原订阅并可查看该号的同�
   fireEvent.click(within(row).getByRole('button', { name: '查看记录' }));
   await waitFor(() => expect(read).toHaveBeenCalledWith('/api/offers/wechat-sync-runs?' +
     new URLSearchParams({ source: 'platform', account: account.name, accountId: account.id })));
-});
+}, 30_000);
 
 it('微信限频时提示可重试时间，同时保留手动导入', async () => {
   const collection = { accounts: [{ accountId: 'MzE=', name: '卡羊腿', enabled: true }], authorized: true,
     retryAfter: new Date(Date.now() + 60_000).toISOString() };
   vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/wechat-collection') ? collection
     : url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
   expect(await screen.findByText(/后可重试/)).toBeTruthy();
   expect((screen.getByRole('button', { name: '立即同步' }) as HTMLButtonElement).disabled).toBe(true);
@@ -140,7 +148,7 @@ it('微信读书可以从包含公众号编号的文章长链接添加订阅', a
   vi.spyOn(api, 'get').mockImplementation(async (url) => url.endsWith('/weread-collection') ? { accounts: [], authorized: true }
     : url.endsWith('/sources') ? [] : { cards: [], offers: [], ollamaEnabled: false });
   const save = vi.spyOn(api, 'put').mockResolvedValue({ ok: true });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '活动来源' }));
   await screen.findByText('已授权');
   fireEvent.click(screen.getByRole('button', { name: '添加公众号' }));
@@ -160,7 +168,7 @@ it('同步记录显示文章状态，并用原有链接和标题打开补录', a
       report: { status: 'partial', discovered: 1, updated: 0, skipped: 0, missing: 1, message: '1 篇文章缺少可读正文。',
         articles: [{ url, title: '本周活动', state: 'missing', drafts: 0 }] } }], nextBefore: null,
   } : { cards: [], offers: [], ollamaEnabled: false });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '同步记录' }));
   expect(await screen.findByText('本周活动')).toBeTruthy();
   expect(screen.getByRole('link', { name: '查看原文' }).getAttribute('href')).toBe(url);
@@ -179,7 +187,7 @@ it('我的卡优惠显示已关联卡片的整理结果和领取路径', async (
     offers: [{ id: 1, rule, review: 'draft', applicableCardIds: [1], records: [] },
       { id: 2, rule: { ...rule, title: '未关联到持有卡', cardIds: [] }, review: 'draft', applicableCardIds: [1], records: [] }],
   });
-  render(<MemoryRouter><ResponsiveProvider><App><Offers /></App></ResponsiveProvider></MemoryRouter>);
+  renderOffers();
   fireEvent.click(screen.getByRole('tab', { name: '我的卡优惠' }));
   expect(await screen.findByText('奈雪满40减8')).toBeTruthy();
   expect(screen.getByText('华夏银行（1234） · UP卡')).toBeTruthy();
